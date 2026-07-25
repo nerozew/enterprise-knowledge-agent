@@ -1,0 +1,36 @@
+# 环境变量和密钥
+.env
+.env.*
+!.env.example
+
+# Python
+**/.venv/
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/.coverage
+**/htmlcov/
+
+# Node
+**/node_modules/
+**/dist/
+**/coverage/
+*.local
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# 本地产物和个人文件
+.artifacts/
+
+# 日志和系统文件
+*.log
+.DS_Store
+Thumbs.db
+
+# 当前无根package.json
+/package-lock.json
