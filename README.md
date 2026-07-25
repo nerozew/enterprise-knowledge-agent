@@ -1,6 +1,8 @@
-# 日常灵感智能助手
+# 企业知识库与智能行动 Agent 平台
 
-一个使用 Vue 3、FastAPI、MySQL 与 MCP 构建的日常灵感记录与整理助手。
+项目正在从 Vue 3、FastAPI、MySQL 与 MCP 构建的日常灵感助手 MVP，分阶段升级为包含企业知识库、可信 RAG、多人协同编辑、GraphRAG 与 HITL 行动闭环的平台。
+
+> 当前代码基线为 `v0.1.0-mvp`。计划中的 Redis、MinIO、Milvus、文档摄取、协同编辑、GraphRAG、LangGraph 和评估能力尚未实现，不应当作现有功能使用或写入已完成成果。
 
 当前 MVP 支持：
 
@@ -10,6 +12,11 @@
 - AI 摘要与扩展预览；未配置外部模型时提供确定性中文 fallback。
 - 用户确认后保存 AI 结果，使用版本号防止并发覆盖。
 - MCP stdio Tools，可供本机 Agent 调用。
+
+升级工作在 `codex/enterprise-rag-upgrade` 分支进行：
+
+- [P0-P10 升级路线](docs/upgrade/ROADMAP.md)
+- [P0 冻结契约](docs/upgrade/P0_CONTRACT.md)
 
 ## 项目结构
 
