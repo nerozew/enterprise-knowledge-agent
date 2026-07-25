@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { Inspiration } from '@/api/types'
 
-defineProps<{ items: Inspiration[]; loading: boolean }>()
+defineProps<{ items: Inspiration[]; loading: boolean; readonly?: boolean }>()
 const emit = defineEmits<{ select: [item: Inspiration]; remove: [item: Inspiration]; ai: [item: Inspiration] }>()
 
 const formatter = new Intl.DateTimeFormat('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
@@ -24,7 +24,7 @@ function formatDate(value: string) {
     >
       <div class="card-topline">
         <span>{{ formatDate(item.updated_at) }}</span>
-        <span class="card-actions" @click.stop>
+        <span v-if="!readonly" class="card-actions" @click.stop>
           <el-button text size="small" aria-label="AI 加工" @click="emit('ai', item)">AI</el-button>
           <el-button text size="small" type="danger" aria-label="删除灵感" @click="emit('remove', item)">删除</el-button>
         </span>

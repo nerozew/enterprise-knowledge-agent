@@ -10,6 +10,7 @@ from app.core.security import create_access_token, hash_password, verify_passwor
 from app.models.entities import User
 from app.repositories.users import UserRepository
 from app.schemas.auth import LoginRequest, RegisterRequest
+from app.services.workspaces import provision_personal_workspace
 
 
 def normalize_email(email: str) -> str:
@@ -28,7 +29,9 @@ class AuthService:
         self.users = UserRepository(session)
         self.limiter = limiter
 
-    async def register(self, payload: RegisterRequest) -> tuple[User, str]:
+    async def register(
+        self, payload: RegisterRequest, request_id: str | None = None
+    ) -> tuple[User, str]:
         email = normalize_email(str(payload.email))
         if await self.users.get_by_email(email):
             raise AppError("email_exists", "该邮箱已注册", 409)
@@ -39,10 +42,17 @@ class AuthService:
         )
         self.users.add(user)
         try:
+            await self.session.flush()
+            await provision_personal_workspace(
+                self.session, user, request_id=request_id
+            )
             await self.session.commit()
         except IntegrityError as exc:
             await self.session.rollback()
             raise AppError("email_exists", "该邮箱已注册", 409) from exc
+        except Exception:
+            await self.session.rollback()
+            raise
         await self.session.refresh(user)
         return user, create_access_token(user.id, self.settings)
 

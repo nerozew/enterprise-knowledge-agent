@@ -3,7 +3,14 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import ConfigDict, Field, HttpUrl, field_validator, model_validator
+from pydantic import (
+    AliasChoices,
+    ConfigDict,
+    Field,
+    HttpUrl,
+    field_validator,
+    model_validator,
+)
 
 from app.schemas.common import APIModel
 from app.schemas.tags import TagReference
@@ -54,6 +61,10 @@ class InspirationPatch(APIModel):
 
 class InspirationResponse(APIModel):
     id: UUID
+    workspace_id: UUID
+    author_id: UUID = Field(
+        validation_alias=AliasChoices("user_id", "author_id")
+    )
     title: str | None
     content: str
     summary: str | None

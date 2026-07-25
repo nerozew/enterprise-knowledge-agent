@@ -9,9 +9,14 @@ router = APIRouter()
 
 @router.post("/register", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
 async def register(
-    payload: RegisterRequest, session: SessionDep, settings: SettingsDep
+    payload: RegisterRequest,
+    request: Request,
+    session: SessionDep,
+    settings: SettingsDep,
 ) -> AuthResponse:
-    user, token = await AuthService(session, settings).register(payload)
+    user, token = await AuthService(session, settings).register(
+        payload, request.state.request_id
+    )
     return AuthResponse(access_token=token, user=UserResponse.model_validate(user))
 
 

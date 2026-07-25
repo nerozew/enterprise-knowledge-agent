@@ -12,9 +12,12 @@ class AiGenerationRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def get_by_key(self, user_id: UUID, idempotency_key: str) -> AiGeneration | None:
+    async def get_by_key(
+        self, workspace_id: UUID, user_id: UUID, idempotency_key: str
+    ) -> AiGeneration | None:
         return await self.session.scalar(
             select(AiGeneration).where(
+                AiGeneration.workspace_id == workspace_id,
                 AiGeneration.user_id == user_id,
                 AiGeneration.idempotency_key == idempotency_key,
             )
@@ -22,4 +25,3 @@ class AiGenerationRepository:
 
     def add(self, generation: AiGeneration) -> None:
         self.session.add(generation)
-

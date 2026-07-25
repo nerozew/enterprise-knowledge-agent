@@ -18,6 +18,10 @@ class UserRepository:
     async def get_by_id(self, user_id: UUID) -> User | None:
         return await self.session.get(User, user_id)
 
+    async def get_active_by_email(self, email: str) -> User | None:
+        return await self.session.scalar(
+            select(User).where(User.email == email, User.is_active.is_(True))
+        )
+
     def add(self, user: User) -> None:
         self.session.add(user)
-

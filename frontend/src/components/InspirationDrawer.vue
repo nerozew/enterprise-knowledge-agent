@@ -3,7 +3,13 @@ import { reactive, ref, watch } from 'vue'
 import type { FormInstance, FormRules } from 'element-plus'
 import type { Inspiration, InspirationUpdate, Tag } from '@/api/types'
 
-const props = defineProps<{ modelValue: boolean; inspiration: Inspiration | null; tags: Tag[]; busy: boolean }>()
+const props = defineProps<{
+  modelValue: boolean
+  inspiration: Inspiration | null
+  tags: Tag[]
+  busy: boolean
+  readonly?: boolean
+}>()
 const emit = defineEmits<{
   'update:modelValue': [value: boolean]
   save: [id: string, payload: InspirationUpdate]
@@ -51,7 +57,7 @@ async function save() {
 <template>
   <el-drawer
     :model-value="modelValue"
-    title="编辑灵感"
+    :title="readonly ? '查看灵感' : '编辑灵感'"
     size="min(620px, 100%)"
     destroy-on-close
     @update:model-value="emit('update:modelValue', $event)"
@@ -59,18 +65,18 @@ async function save() {
     <template v-if="inspiration">
       <el-form ref="formRef" :model="form" :rules="rules" label-position="top" @submit.prevent="save">
         <el-form-item label="标题" prop="title">
-          <el-input v-model="form.title" maxlength="200" />
+          <el-input v-model="form.title" maxlength="200" :readonly="readonly" />
         </el-form-item>
         <el-form-item label="正文" prop="content">
-          <el-input v-model="form.content" type="textarea" :rows="12" maxlength="20000" show-word-limit />
+          <el-input v-model="form.content" type="textarea" :rows="12" maxlength="20000" show-word-limit :readonly="readonly" />
         </el-form-item>
         <el-form-item label="标签">
-          <el-select v-model="form.tagIds" multiple class="full-width" placeholder="选择标签">
+          <el-select v-model="form.tagIds" multiple class="full-width" placeholder="选择标签" :disabled="readonly">
             <el-option v-for="tag in tags" :key="tag.id" :value="tag.id" :label="tag.name" />
           </el-select>
         </el-form-item>
         <el-form-item label="来源链接">
-          <el-input v-model="form.sourceUrl" placeholder="https://" />
+          <el-input v-model="form.sourceUrl" placeholder="https://" :readonly="readonly" />
         </el-form-item>
         <div v-if="inspiration.summary" class="generated-block">
           <span>AI 摘要</span>
@@ -83,9 +89,9 @@ async function save() {
       </el-form>
     </template>
     <template #footer>
-      <el-button v-if="inspiration" @click="emit('ai', inspiration)">用 AI 加工</el-button>
-      <el-button @click="emit('update:modelValue', false)">取消</el-button>
-      <el-button type="primary" :loading="busy" @click="save">保存修改</el-button>
+      <el-button v-if="inspiration && !readonly" @click="emit('ai', inspiration)">用 AI 加工</el-button>
+      <el-button @click="emit('update:modelValue', false)">{{ readonly ? '关闭' : '取消' }}</el-button>
+      <el-button v-if="!readonly" type="primary" :loading="busy" @click="save">保存修改</el-button>
     </template>
   </el-drawer>
 </template>

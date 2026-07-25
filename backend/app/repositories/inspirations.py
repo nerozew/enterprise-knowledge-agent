@@ -14,24 +14,27 @@ class InspirationRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    def _owned_query(self, inspiration_id: UUID, user_id: UUID) -> Select:
+    def _workspace_query(self, workspace_id: UUID, inspiration_id: UUID) -> Select:
         return (
             select(Inspiration)
             .options(selectinload(Inspiration.tags))
-            .where(Inspiration.id == inspiration_id, Inspiration.user_id == user_id)
+            .where(
+                Inspiration.workspace_id == workspace_id,
+                Inspiration.id == inspiration_id,
+            )
         )
 
-    async def get_owned(
-        self, inspiration_id: UUID, user_id: UUID, *, include_deleted: bool = False
+    async def get_in_workspace(
+        self, workspace_id: UUID, inspiration_id: UUID, *, include_deleted: bool = False
     ) -> Inspiration | None:
-        query = self._owned_query(inspiration_id, user_id)
+        query = self._workspace_query(workspace_id, inspiration_id)
         if not include_deleted:
             query = query.where(Inspiration.deleted_at.is_(None))
         return await self.session.scalar(query)
 
     async def list(
         self,
-        user_id: UUID,
+        workspace_id: UUID,
         *,
         query_text: str | None,
         tag_ids: list[UUID],
@@ -43,7 +46,7 @@ class InspirationRepository:
         page: int,
         page_size: int,
     ) -> tuple[list[Inspiration], int]:
-        filters = [Inspiration.user_id == user_id]
+        filters = [Inspiration.workspace_id == workspace_id]
         if not include_deleted:
             filters.append(Inspiration.deleted_at.is_(None))
         if query_text:
@@ -65,7 +68,7 @@ class InspirationRepository:
         if tag_ids:
             ids_query = (
                 ids_query.join(Inspiration.tags)
-                .where(Tag.id.in_(tag_ids), Tag.user_id == user_id)
+                .where(Tag.id.in_(tag_ids), Tag.workspace_id == workspace_id)
                 .group_by(Inspiration.id)
             )
             if tag_match == "all":
@@ -76,9 +79,12 @@ class InspirationRepository:
         )
         sort_expression = sort_column.asc() if sort.endswith("_asc") else sort_column.desc()
         id_expression = Inspiration.id.asc() if sort.endswith("_asc") else Inspiration.id.desc()
-
-        total_query = select(func.count()).select_from(ids_query.order_by(None).subquery())
-        total = int(await self.session.scalar(total_query) or 0)
+        total = int(
+            await self.session.scalar(
+                select(func.count()).select_from(ids_query.order_by(None).subquery())
+            )
+            or 0
+        )
         page_ids = list(
             (
                 await self.session.scalars(
@@ -95,7 +101,10 @@ class InspirationRepository:
                 await self.session.scalars(
                     select(Inspiration)
                     .options(selectinload(Inspiration.tags))
-                    .where(Inspiration.id.in_(page_ids), Inspiration.user_id == user_id)
+                    .where(
+                        Inspiration.workspace_id == workspace_id,
+                        Inspiration.id.in_(page_ids),
+                    )
                 )
             )
             .unique()

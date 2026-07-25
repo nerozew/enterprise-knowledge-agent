@@ -2,9 +2,13 @@
 import { computed, ref, watch } from 'vue'
 import { inspirationApi } from '@/api/inspirations'
 import { mapApiError } from '@/api/client'
+import { executeIdempotentIntent } from '@/api/idempotency'
 import type { AiGeneration, AiOperation, Inspiration, InspirationUpdate } from '@/api/types'
+import { useWorkspaceStore } from '@/stores/workspaces'
+import { reportWorkspaceAccessRevoked } from '@/features/workspace/accessRevocation'
 
 const props = defineProps<{ modelValue: boolean; inspiration: Inspiration | null; saving: boolean }>()
+const workspaces = useWorkspaceStore()
 const emit = defineEmits<{
   'update:modelValue': [value: boolean]
   save: [id: string, payload: InspirationUpdate]
@@ -26,26 +30,29 @@ watch(
   },
 )
 
-function idempotencyKey(): string {
-  return typeof crypto.randomUUID === 'function'
-    ? crypto.randomUUID()
-    : `${Date.now()}-${Math.random().toString(16).slice(2)}`
-}
-
 async function generate() {
   if (!props.inspiration) return
+  const workspaceId = workspaces.activeWorkspaceId
+  if (!workspaceId) return
   generating.value = true
   errorMessage.value = ''
   generation.value = null
   try {
     const trimmedInstruction = instruction.value.trim()
-    generation.value = await inspirationApi.generate(
-      props.inspiration.id,
-      trimmedInstruction ? { operation: operation.value, instruction: trimmedInstruction } : { operation: operation.value },
-      idempotencyKey(),
+    const input = trimmedInstruction
+      ? { operation: operation.value, instruction: trimmedInstruction }
+      : { operation: operation.value }
+    generation.value = await executeIdempotentIntent(
+      `workspace:${workspaceId}:inspiration.ai:${props.inspiration.id}`,
+      input,
+      (key) => inspirationApi.generate(workspaceId, props.inspiration!.id, input, key),
     )
   } catch (error) {
-    errorMessage.value = mapApiError(error).message
+    const mapped = mapApiError(error)
+    if (mapped.status === 404 && mapped.code === 'resource_not_found') {
+      reportWorkspaceAccessRevoked(workspaceId)
+    }
+    errorMessage.value = mapped.message
   } finally {
     generating.value = false
   }

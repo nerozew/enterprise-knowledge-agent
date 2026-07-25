@@ -13,10 +13,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
 from app.core.errors import AppError
-from app.models.entities import AiGeneration
+from app.models.entities import AiGeneration, MemberRole
 from app.repositories.ai_generations import AiGenerationRepository
 from app.repositories.inspirations import InspirationRepository
 from app.schemas.ai import AiGenerationRequest, AiGenerationResponse
+from app.services.workspaces import WorkspaceAccessService, add_audit
 
 
 @dataclass(frozen=True)
@@ -115,12 +116,17 @@ class AiGenerationService:
         user_id: UUID,
         settings: Settings,
         provider: AIProvider | None = None,
+        workspace_id: UUID | None = None,
+        request_id: str | None = None,
     ) -> None:
         self.session = session
         self.user_id = user_id
         self.generations = AiGenerationRepository(session)
         self.inspirations = InspirationRepository(session)
         self.provider = provider or build_provider(settings)
+        self.workspace_id = workspace_id
+        self.request_id = request_id
+        self.access = WorkspaceAccessService(session, user_id)
 
     @staticmethod
     def request_hash(
@@ -149,11 +155,25 @@ class AiGenerationService:
         payload: AiGenerationRequest,
         idempotency_key: str,
     ) -> AiGeneration:
-        inspiration = await self.inspirations.get_owned(inspiration_id, self.user_id)
+        if self.workspace_id is None:
+            from app.repositories.workspaces import WorkspaceRepository
+
+            personal = await WorkspaceRepository(self.session).get_personal(self.user_id)
+            if personal is None:
+                raise AppError("resource_not_found", "资源不存在", 404)
+            self.workspace_id = personal.id
+        _, member = await self.access.require(
+            self.workspace_id, minimum_role=MemberRole.EDITOR
+        )
+        inspiration = await self.inspirations.get_in_workspace(
+            self.workspace_id, inspiration_id
+        )
         if inspiration is None:
-            raise AppError("not_found", "灵感不存在", 404)
+            raise AppError("resource_not_found", "资源不存在", 404)
         digest = self.request_hash(inspiration_id, payload, inspiration.title, inspiration.content)
-        existing = await self.generations.get_by_key(self.user_id, idempotency_key)
+        existing = await self.generations.get_by_key(
+            self.workspace_id, self.user_id, idempotency_key
+        )
         if existing:
             if existing.request_hash != digest:
                 raise AppError("idempotency_conflict", "该幂等键已用于不同请求", 409)
@@ -163,6 +183,7 @@ class AiGenerationService:
             payload.operation, inspiration.title, inspiration.content, payload.instruction
         )
         generation = AiGeneration(
+            workspace_id=self.workspace_id,
             user_id=self.user_id,
             inspiration_id=inspiration.id,
             operation=payload.operation,
@@ -173,11 +194,29 @@ class AiGenerationService:
             output=result.output,
         )
         self.generations.add(generation)
+        await self.session.flush()
+        add_audit(
+            self.session,
+            workspace_id=self.workspace_id,
+            actor_id=self.user_id,
+            actor_role=member.role,
+            action="ai_generation.created",
+            target_type="ai_generation",
+            target_id=generation.id,
+            request_id=self.request_id,
+            metadata={
+                "operation": payload.operation,
+                "mode": result.mode,
+                "inspiration_id": str(inspiration.id),
+            },
+        )
         try:
             await self.session.commit()
         except IntegrityError as exc:
             await self.session.rollback()
-            winner = await self.generations.get_by_key(self.user_id, idempotency_key)
+            winner = await self.generations.get_by_key(
+                self.workspace_id, self.user_id, idempotency_key
+            )
             if winner is None or winner.request_hash != digest:
                 raise AppError(
                     "idempotency_conflict", "该幂等键已用于不同请求", 409
@@ -193,6 +232,7 @@ def ai_generation_response(generation: AiGeneration) -> AiGenerationResponse:
         warning = "AI 服务未配置或暂不可用，当前结果由本地确定性降级逻辑生成。"
     return AiGenerationResponse(
         generation_id=generation.id,
+        workspace_id=generation.workspace_id,
         operation=generation.operation,
         mode=generation.mode,
         result=generation.output,

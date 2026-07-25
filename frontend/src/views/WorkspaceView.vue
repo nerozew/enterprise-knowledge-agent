@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { useRoute } from 'vue-router'
 import AppShell from '@/components/AppShell.vue'
 import QuickCapture from '@/components/QuickCapture.vue'
 import FilterBar from '@/components/FilterBar.vue'
@@ -12,9 +13,12 @@ import { mapApiError } from '@/api/client'
 import type { Inspiration, InspirationCreate, InspirationQuery, InspirationUpdate } from '@/api/types'
 import { useInspirationStore } from '@/stores/inspirations'
 import { useTagStore } from '@/stores/tags'
+import { useWorkspaceStore } from '@/stores/workspaces'
 
 const inspirations = useInspirationStore()
 const tags = useTagStore()
+const workspaces = useWorkspaceStore()
+const route = useRoute()
 const quickCapture = ref<InstanceType<typeof QuickCapture>>()
 const selected = ref<Inspiration | null>(null)
 const aiTarget = ref<Inspiration | null>(null)
@@ -25,10 +29,21 @@ const recentlyDeleted = ref<Inspiration | null>(null)
 const page = computed(() => inspirations.query.page ?? 1)
 const pageSize = computed(() => inspirations.query.page_size ?? 12)
 const resultLabel = computed(() => inspirations.total ? `共 ${inspirations.total} 条灵感` : '你的灵感时间线')
+const readonly = computed(() => !workspaces.canWrite)
 
-onMounted(async () => {
-  await Promise.all([inspirations.load(), tags.load()])
-})
+watch(
+  () => workspaces.activeWorkspaceId,
+  async (workspaceId) => {
+    selected.value = null
+    aiTarget.value = null
+    detailOpen.value = false
+    aiOpen.value = false
+    tagsOpen.value = false
+    recentlyDeleted.value = null
+    if (workspaceId) await Promise.all([inspirations.load(), tags.load()])
+  },
+  { immediate: true },
+)
 
 async function createInspiration(payload: InspirationCreate) {
   try {
@@ -122,7 +137,53 @@ async function changePage(nextPage: number) {
 
 <template>
   <AppShell>
-    <QuickCapture ref="quickCapture" :tags="tags.items" :busy="inspirations.mutating" @submit="createInspiration" />
+    <el-alert
+      v-if="workspaces.recoveryMessage"
+      class="workspace-notice"
+      type="warning"
+      :title="workspaces.recoveryMessage"
+      show-icon
+      :closable="false"
+    />
+    <el-alert
+      v-else-if="route.query.unavailable === '1'"
+      class="workspace-notice"
+      type="warning"
+      title="原空间已不可访问，已安全回到可访问空间。"
+      show-icon
+      :closable="false"
+    />
+    <el-alert
+      v-else-if="route.query.permission === 'denied'"
+      class="workspace-notice"
+      type="warning"
+      title="当前角色不能访问空间管理页面。"
+      show-icon
+      :closable="false"
+    />
+    <el-alert
+      v-else-if="route.query.revoked === '1'"
+      class="workspace-notice"
+      type="warning"
+      title="原空间权限已失效，已清理旧内容并回到可访问空间。"
+      show-icon
+      :closable="false"
+    />
+    <el-alert
+      v-if="readonly"
+      class="workspace-notice"
+      type="info"
+      title="你当前是 VIEWER，可以查看和筛选灵感，但不能修改空间内容。"
+      show-icon
+      :closable="false"
+    />
+    <QuickCapture
+      v-if="!readonly"
+      ref="quickCapture"
+      :tags="tags.items"
+      :busy="inspirations.mutating"
+      @submit="createInspiration"
+    />
 
     <el-alert
       v-if="recentlyDeleted"
@@ -145,7 +206,13 @@ async function changePage(nextPage: number) {
           <h2 id="timeline-title">{{ resultLabel }}</h2>
         </div>
       </div>
-      <FilterBar :query="inspirations.query" :tags="tags.items" @change="applyFilters" @manage-tags="tagsOpen = true" />
+      <FilterBar
+        :query="inspirations.query"
+        :tags="tags.items"
+        :readonly="readonly"
+        @change="applyFilters"
+        @manage-tags="tagsOpen = true"
+      />
 
       <el-alert v-if="inspirations.errorMessage" type="error" :title="inspirations.errorMessage" show-icon :closable="false">
         <template #default><el-button link type="primary" @click="inspirations.load()">重新加载</el-button></template>
@@ -155,6 +222,7 @@ async function changePage(nextPage: number) {
         v-if="inspirations.hasItems || inspirations.loading"
         :items="inspirations.items"
         :loading="inspirations.loading"
+        :readonly="readonly"
         @select="openDetail"
         @remove="removeInspiration"
         @ai="openAi"
@@ -181,6 +249,7 @@ async function changePage(nextPage: number) {
       :inspiration="selected"
       :tags="tags.items"
       :busy="inspirations.mutating"
+      :readonly="readonly"
       @save="updateInspiration"
       @ai="openAi"
     />

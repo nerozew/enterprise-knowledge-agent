@@ -38,6 +38,7 @@ class TagPatch(APIModel):
 
 class TagReference(APIModel):
     id: UUID
+    workspace_id: UUID
     name: str
     normalized_name: str
     color: str | None

@@ -2,7 +2,9 @@ import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { authApi } from '@/api/auth'
 import { AUTH_STORAGE_KEY, mapApiError } from '@/api/client'
+import { clearPendingIdempotencyIntents } from '@/api/idempotency'
 import type { LoginInput, RegisterInput, User } from '@/api/types'
+import { useWorkspaceStore } from './workspaces'
 
 interface AuthSnapshot {
   token: string
@@ -40,6 +42,7 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   function acceptSession(accessToken: string, nextUser: User) {
+    if (user.value?.id && user.value.id !== nextUser.id) useWorkspaceStore().clear()
     token.value = accessToken
     user.value = nextUser
     initialized.value = true
@@ -52,6 +55,8 @@ export const useAuthStore = defineStore('auth', () => {
     user.value = null
     errorMessage.value = ''
     persist()
+    clearPendingIdempotencyIntents()
+    useWorkspaceStore().clear()
   }
 
   function logout() {

@@ -2,7 +2,7 @@
 import { ref, watch } from 'vue'
 import type { InspirationQuery, InspirationSort, Tag, TagMatch } from '@/api/types'
 
-const props = defineProps<{ query: InspirationQuery; tags: Tag[] }>()
+const props = defineProps<{ query: InspirationQuery; tags: Tag[]; readonly?: boolean }>()
 const emit = defineEmits<{ change: [query: InspirationQuery]; manageTags: [] }>()
 const keyword = ref(props.query.q ?? '')
 let timer: ReturnType<typeof setTimeout> | undefined
@@ -63,6 +63,6 @@ function onKeywordInput(value: string) {
       <el-option label="最近更新" value="updated_desc" />
       <el-option label="最近创建" value="created_desc" />
     </el-select>
-    <el-button class="tag-manage-button" @click="emit('manageTags')">管理标签</el-button>
+    <el-button v-if="!readonly" class="tag-manage-button" @click="emit('manageTags')">管理标签</el-button>
   </section>
 </template>

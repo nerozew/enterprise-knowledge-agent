@@ -16,9 +16,9 @@ class AiGenerationRequest(APIModel):
 
 class AiGenerationResponse(APIModel):
     generation_id: UUID
+    workspace_id: UUID
     operation: Literal["summary", "expand"]
     mode: Literal["provider", "fallback"]
     result: str
     warning: str | None = None
     created_at: datetime
-

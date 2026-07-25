@@ -2,8 +2,11 @@
 import { useRouter } from 'vue-router'
 import { ElMessageBox } from 'element-plus'
 import { useAuthStore } from '@/stores/auth'
+import { useWorkspaceStore } from '@/stores/workspaces'
+import WorkspaceSwitcher from './WorkspaceSwitcher.vue'
 
 const auth = useAuthStore()
+const workspaces = useWorkspaceStore()
 const router = useRouter()
 
 async function handleLogout() {
@@ -23,14 +26,29 @@ async function handleLogout() {
 <template>
   <div class="app-shell">
     <header class="app-header">
-      <router-link class="brand" to="/workspace" aria-label="返回灵感工作台">
+      <router-link
+        class="brand"
+        :to="workspaces.activeWorkspaceId
+          ? { name: 'workspace-home', params: { workspaceId: workspaces.activeWorkspaceId } }
+          : { name: 'workspace-resolve' }"
+        aria-label="返回知识工作台"
+      >
         <span class="brand-mark" aria-hidden="true">✦</span>
         <span>
           <strong>灵感拾光</strong>
-          <small>把转瞬即逝变成随手可得</small>
+          <small>企业知识工作台</small>
         </span>
       </router-link>
+      <WorkspaceSwitcher />
       <div class="header-actions">
+        <nav v-if="workspaces.canManage && workspaces.activeWorkspaceId" class="workspace-nav" aria-label="空间管理">
+          <router-link :to="{ name: 'workspace-members', params: { workspaceId: workspaces.activeWorkspaceId } }">
+            成员
+          </router-link>
+          <router-link :to="{ name: 'workspace-audit', params: { workspaceId: workspaces.activeWorkspaceId } }">
+            审计
+          </router-link>
+        </nav>
         <span class="user-name">{{ auth.user?.display_name }}</span>
         <el-button text aria-label="退出登录" @click="handleLogout">退出</el-button>
       </div>

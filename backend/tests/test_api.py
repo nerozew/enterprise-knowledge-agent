@@ -230,6 +230,7 @@ async def test_ai_fallback_and_idempotency(client):
     assert first.json()["warning"]
     assert set(first.json()) == {
         "generation_id",
+        "workspace_id",
         "operation",
         "mode",
         "result",

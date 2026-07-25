@@ -38,5 +38,6 @@ def decode_access_token(token: str, settings: Settings) -> UUID:
             raise ValueError("invalid token type")
         return UUID(payload["sub"])
     except (jwt.PyJWTError, KeyError, TypeError, ValueError) as exc:
-        raise AppError("unauthorized", "登录凭据无效或已过期", 401) from exc
-
+        raise AppError(
+            "authentication_required", "登录凭据无效或已过期", 401
+        ) from exc

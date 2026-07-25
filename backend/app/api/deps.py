@@ -13,17 +13,19 @@ from app.core.security import decode_access_token
 from app.models.entities import User
 from app.repositories.users import UserRepository
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login", auto_error=False)
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 
 
 async def get_current_user(
-    token: Annotated[str, Depends(oauth2_scheme)],
+    token: Annotated[str | None, Depends(oauth2_scheme)],
     session: SessionDep,
     settings: SettingsDep,
 ) -> User:
+    if token is None:
+        raise AppError("authentication_required", "需要登录后访问", 401)
     user_id = decode_access_token(token, settings)
     user = await UserRepository(session).get_by_id(user_id)
     if user is None or not user.is_active:
@@ -32,4 +34,3 @@ async def get_current_user(
 
 
 CurrentUser = Annotated[User, Depends(get_current_user)]
-

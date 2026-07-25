@@ -10,34 +10,59 @@ import type {
 } from './types'
 
 export const inspirationApi = {
-  async list(query: InspirationQuery, signal?: AbortSignal): Promise<InspirationList> {
+  async list(workspaceId: string, query: InspirationQuery, signal?: AbortSignal): Promise<InspirationList> {
     const config = signal ? { params: query, signal } : { params: query }
-    const { data } = await apiClient.get<InspirationList>('/inspirations', config)
+    const { data } = await apiClient.get<InspirationList>(`/workspaces/${workspaceId}/inspirations`, config)
     return data
   },
-  async get(id: string): Promise<Inspiration> {
-    const { data } = await apiClient.get<Inspiration>(`/inspirations/${id}`)
+  async get(workspaceId: string, id: string): Promise<Inspiration> {
+    const { data } = await apiClient.get<Inspiration>(`/workspaces/${workspaceId}/inspirations/${id}`)
     return data
   },
-  async create(input: InspirationCreate): Promise<Inspiration> {
-    const { data } = await apiClient.post<Inspiration>('/inspirations', input)
-    return data
-  },
-  async update(id: string, input: InspirationUpdate): Promise<Inspiration> {
-    const { data } = await apiClient.patch<Inspiration>(`/inspirations/${id}`, input)
-    return data
-  },
-  async remove(id: string, version: number): Promise<void> {
-    await apiClient.delete(`/inspirations/${id}`, { params: { version } })
-  },
-  async restore(id: string, version: number): Promise<Inspiration> {
-    const { data } = await apiClient.post<Inspiration>(`/inspirations/${id}/restore`, { version })
-    return data
-  },
-  async generate(id: string, input: AiGenerationInput, idempotencyKey: string): Promise<AiGeneration> {
-    const { data } = await apiClient.post<AiGeneration>(`/inspirations/${id}/ai-generations`, input, {
+  async create(workspaceId: string, input: InspirationCreate, idempotencyKey: string): Promise<Inspiration> {
+    const { data } = await apiClient.post<Inspiration>(`/workspaces/${workspaceId}/inspirations`, input, {
       headers: { 'Idempotency-Key': idempotencyKey },
     })
+    return data
+  },
+  async update(
+    workspaceId: string,
+    id: string,
+    input: InspirationUpdate,
+    idempotencyKey: string,
+  ): Promise<Inspiration> {
+    const { data } = await apiClient.patch<Inspiration>(
+      `/workspaces/${workspaceId}/inspirations/${id}`,
+      input,
+      { headers: { 'Idempotency-Key': idempotencyKey, 'If-Match': `"${input.version}"` } },
+    )
+    return data
+  },
+  async remove(workspaceId: string, id: string, version: number, idempotencyKey: string): Promise<void> {
+    await apiClient.delete(`/workspaces/${workspaceId}/inspirations/${id}`, {
+      params: { version },
+      headers: { 'Idempotency-Key': idempotencyKey, 'If-Match': `"${version}"` },
+    })
+  },
+  async restore(workspaceId: string, id: string, version: number, idempotencyKey: string): Promise<Inspiration> {
+    const { data } = await apiClient.post<Inspiration>(
+      `/workspaces/${workspaceId}/inspirations/${id}/restore`,
+      { version },
+      { headers: { 'Idempotency-Key': idempotencyKey, 'If-Match': `"${version}"` } },
+    )
+    return data
+  },
+  async generate(
+    workspaceId: string,
+    id: string,
+    input: AiGenerationInput,
+    idempotencyKey: string,
+  ): Promise<AiGeneration> {
+    const { data } = await apiClient.post<AiGeneration>(
+      `/workspaces/${workspaceId}/inspirations/${id}/ai-generations`,
+      input,
+      { headers: { 'Idempotency-Key': idempotencyKey } },
+    )
     return data
   },
 }

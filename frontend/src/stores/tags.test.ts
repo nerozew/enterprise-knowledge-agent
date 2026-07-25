@@ -10,6 +10,7 @@ vi.mock('@/api/tags', () => ({
 
 const managedTag: ManagedTag = {
   id: 'tag-1',
+  workspace_id: 'workspace-1',
   name: '动漫',
   color: '#5A7D68',
   version: 1,
@@ -26,6 +27,7 @@ describe('tag store', () => {
     const response: ManagedTag = { ...managedTag, name: '新动漫', version: 2 }
     vi.mocked(tagApi.update).mockResolvedValue(response)
     const store = useTagStore()
+    store.activateWorkspace('workspace-1')
     store.items = [{ ...managedTag }]
 
     await store.update(managedTag.id, { version: 1, name: response.name })
@@ -34,9 +36,17 @@ describe('tag store', () => {
   })
 
   it('starts a newly created tag at zero usages', async () => {
-    const response: ManagedTag = { id: 'tag-2', name: '健身', color: null, version: 1, usage_count: 0 }
+    const response: ManagedTag = {
+      id: 'tag-2',
+      workspace_id: 'workspace-1',
+      name: '健身',
+      color: null,
+      version: 1,
+      usage_count: 0,
+    }
     vi.mocked(tagApi.create).mockResolvedValue(response)
     const store = useTagStore()
+    store.activateWorkspace('workspace-1')
 
     await store.create({ name: response.name, color: null })
 

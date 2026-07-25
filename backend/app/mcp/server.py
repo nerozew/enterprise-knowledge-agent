@@ -128,7 +128,8 @@ async def inspiration_create(
             tag_ids=[UUID(value) for value in (tag_ids or [])],
         )
         async with _user_session(user_id) as session:
-            item = await InspirationService(session, user_id).create(payload)
+            result = await InspirationService(session, user_id).create(payload)
+            item = result.resource
             return _as_dict(InspirationResponse.model_validate(item))
     except AppError as exc:
         raise _mcp_error(exc) from exc
@@ -157,9 +158,10 @@ async def inspiration_update(
         values["tag_ids"] = [UUID(value) for value in tag_ids]
     try:
         async with _user_session(user_id) as session:
-            item = await InspirationService(session, user_id).update(
+            result = await InspirationService(session, user_id).update(
                 UUID(inspiration_id), InspirationPatch(**values)
             )
+            item = result.resource
             return _as_dict(InspirationResponse.model_validate(item))
     except AppError as exc:
         raise _mcp_error(exc) from exc
@@ -175,9 +177,10 @@ async def inspiration_delete(
         raise ValueError("删除前必须明确设置 confirm=true")
     try:
         async with _user_session(user_id) as session:
-            item = await InspirationService(session, user_id).delete(
+            result = await InspirationService(session, user_id).delete(
                 UUID(inspiration_id), version
             )
+            item = result.resource
             return _as_dict(InspirationResponse.model_validate(item))
     except AppError as exc:
         raise _mcp_error(exc) from exc
@@ -191,9 +194,10 @@ async def inspiration_restore(
     user_id = _verify_token(local_token)
     try:
         async with _user_session(user_id) as session:
-            item = await InspirationService(session, user_id).restore(
+            result = await InspirationService(session, user_id).restore(
                 UUID(inspiration_id), version
             )
+            item = result.resource
             return _as_dict(InspirationResponse.model_validate(item))
     except AppError as exc:
         raise _mcp_error(exc) from exc
@@ -214,10 +218,11 @@ async def tag_create(local_token: str, name: str, color: str | None = None) -> d
     user_id = _verify_token(local_token)
     try:
         async with _user_session(user_id) as session:
-            tag, usage_count = await TagService(session, user_id).create(
+            result = await TagService(session, user_id).create(
                 TagCreate(name=name, color=color)
             )
-            return _as_dict(_tag_response(tag, usage_count))
+            assert result.tag is not None
+            return _as_dict(_tag_response(result.tag, result.usage_count))
     except AppError as exc:
         raise _mcp_error(exc) from exc
 
@@ -239,10 +244,11 @@ async def tag_update(
         values["color"] = color
     try:
         async with _user_session(user_id) as session:
-            tag, usage_count = await TagService(session, user_id).update(
+            result = await TagService(session, user_id).update(
                 UUID(tag_id), TagPatch(**values)
             )
-            return _as_dict(_tag_response(tag, usage_count))
+            assert result.tag is not None
+            return _as_dict(_tag_response(result.tag, result.usage_count))
     except AppError as exc:
         raise _mcp_error(exc) from exc
 
