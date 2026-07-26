@@ -6,6 +6,8 @@ import { mapApiError } from '@/api/client'
 import type { WorkspaceCreate, WorkspaceSummary } from '@/api/types'
 import { useInspirationStore } from './inspirations'
 import { useTagStore } from './tags'
+import { useDocumentStore } from './documents'
+import { useKnowledgeSearchStore } from './knowledgeSearch'
 
 const LAST_WORKSPACE_PREFIX = 'inspiration-assistant.last-workspace'
 
@@ -45,6 +47,8 @@ export const useWorkspaceStore = defineStore('workspaces', () => {
   function resetScopedStores(workspaceId: string | null) {
     useInspirationStore().activateWorkspace(workspaceId)
     useTagStore().activateWorkspace(workspaceId)
+    useDocumentStore().activateWorkspace(workspaceId)
+    useKnowledgeSearchStore().activateWorkspace(workspaceId)
   }
 
   function selectLocal(workspaceId: string, userId: string) {

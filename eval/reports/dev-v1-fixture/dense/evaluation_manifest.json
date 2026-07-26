@@ -1,0 +1,28 @@
+{
+  "dataset_version": "dev-v1",
+  "language": "zh-CN",
+  "created_at": "2026-07-26",
+  "license": "CC0-1.0",
+  "synthetic": true,
+  "corpus_snapshot": "sha256:77651df5120a0280b10932a1efd88734482ffa8649555ec9c6bb73e3d2e3a964",
+  "cases_snapshot": "sha256:9eb6e7508e29b0168bcc164b88610052e07b6759f8787ab9f7762d68b8707683",
+  "corpus_documents": 8,
+  "answerable_cases": 20,
+  "unanswerable_cases": 4,
+  "default_top_k": 5,
+  "random_seed": 20260726,
+  "allowed_claim": "development-regression-only",
+  "notes": [
+    "语料与人物、公司、制度均为虚构。",
+    "不得用 FIXTURE Provider 的质量或延迟数字写入简历。",
+    "正式 P10 需要独立的 100 题人工标注集和盲测报告。"
+  ],
+  "provider_mode": "FIXTURE",
+  "retrieval_mode": "DENSE",
+  "fusion": "RRF",
+  "rerank": false,
+  "top_k": 5,
+  "python": "3.13.12",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "runner_sha256": "fb2a473c4816a381c1df1506561cd58466ac836d622078cc3f210f76f4457508"
+}

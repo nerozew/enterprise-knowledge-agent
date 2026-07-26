@@ -12,6 +12,7 @@ from app.core.config import get_settings
 from app.core.database import engine
 from app.core.errors import install_error_handlers
 from app.core.middleware import RequestIdMiddleware
+from app.services.knowledge import close_knowledge_adapters, knowledge_capabilities
 
 settings = get_settings()
 
@@ -19,6 +20,7 @@ settings = get_settings()
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     yield
+    await close_knowledge_adapters()
     await engine.dispose()
 
 
@@ -70,3 +72,12 @@ async def health_ready(request: Request) -> JSONResponse:
                 "request_id": getattr(request.state, "request_id", None),
             },
         )
+
+
+@app.get("/health/capabilities", tags=["健康检查"])
+async def health_capabilities() -> dict:
+    return {
+        "status": "ok",
+        "database": {"configured": True, "critical": True},
+        "optional": await knowledge_capabilities(settings),
+    }

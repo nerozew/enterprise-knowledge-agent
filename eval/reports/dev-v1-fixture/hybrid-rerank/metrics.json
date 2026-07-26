@@ -1,0 +1,33 @@
+{
+  "allowed_claim": "development-regression-only",
+  "provider_mode": "FIXTURE",
+  "retrieval": {
+    "recall_at_5": 1.0,
+    "mrr_at_10": 1.0,
+    "ndcg_at_10": 1.0
+  },
+  "refusal": {
+    "precision": 1.0,
+    "recall": 1.0,
+    "f1": 1.0,
+    "false_refusal_count": 0,
+    "false_refusal_case_ids": []
+  },
+  "source_span_retrieval": {
+    "status": "available",
+    "annotated_case_count": 20,
+    "unmapped_gold_source_count": 0,
+    "recall_at_5": 1.0,
+    "mrr_at_10": 0.8666666666666666,
+    "ndcg_at_10": 0.9011859507142915
+  },
+  "integrity": {
+    "duplicate_chunk_id_count": 0,
+    "citation_span_completeness": 1.0
+  },
+  "latency_ms": {
+    "mean": 1.5150749992850858,
+    "p95": 1.6077000182121992
+  },
+  "case_count": 24
+}

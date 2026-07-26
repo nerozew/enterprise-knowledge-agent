@@ -17,7 +17,37 @@ uvicorn app.main:app --reload
 ```
 
 API 文档位于 `http://127.0.0.1:8000/docs`。存活与就绪检查分别为
-`/health/live` 和 `/health/ready`。
+`/health/live` 和 `/health/ready`。`/health/capabilities` 额外报告 Redis、
+对象存储、向量存储与 RAG Provider 的可选能力状态；这些可选依赖失败不会让 P1
+就绪检查失败。
+
+## P2-P4 知识库与 RAG
+
+安装四格式解析与本地开发依赖：
+
+```bash
+python -m pip install -e ".[dev]"
+```
+
+真实 Redis、MinIO、Milvus 适配器是可选依赖：
+
+```bash
+python -m pip install -e ".[dev,rag-infra]"
+```
+
+知识接口位于 `/api/v1/workspaces/{workspace_id}`：
+
+- `POST /documents`：multipart 上传 PDF/DOCX/Markdown/TXT，要求
+  `Idempotency-Key`，默认同步处理便于本地学习。
+- `GET /documents`、`GET /documents/{id}/versions`：文档及不可变发布版本。
+- `GET /ingestion-jobs/{id}`、`POST .../retry|cancel`：状态机与重试。
+- `POST /search`：Dense、BM25、Hybrid、RRF/Weighted、Rerank、Rewrite
+  和父/邻接上下文扩展。
+
+`RAG_PROVIDER_MODE=FIXTURE` 只允许 test/development，用于确定性协议和回归，
+不能把其 Recall、延迟或回答质量用于简历。`ANSWER` 在没有真实 LLM 时返回
+`llm_dependency_unavailable`，不会使用模板伪造答案。生产环境必须配置私有对象
+存储、真实向量库和受控 Provider。
 
 ## 测试与质量检查
 

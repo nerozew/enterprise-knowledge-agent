@@ -30,6 +30,8 @@ async function render(role: WorkspaceRole) {
       { path: '/w/:workspaceId', name: 'workspace-home', component: { template: '<div />' } },
       { path: '/w/:workspaceId/members', name: 'workspace-members', component: { template: '<div />' } },
       { path: '/w/:workspaceId/audit', name: 'workspace-audit', component: { template: '<div />' } },
+      { path: '/w/:workspaceId/knowledge', name: 'workspace-knowledge', component: { template: '<div />' } },
+      { path: '/w/:workspaceId/ask', name: 'workspace-ask', component: { template: '<div />' } },
       { path: '/workspace', name: 'workspace-resolve', component: { template: '<div />' } },
       { path: '/login', name: 'login', component: { template: '<div />' } },
     ],

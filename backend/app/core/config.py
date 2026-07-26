@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -32,6 +33,32 @@ class Settings(BaseSettings):
     mcp_user_id: str | None = None
     mcp_local_token: str | None = None
 
+    redis_url: str | None = None
+    minio_endpoint: str | None = None
+    minio_access_key: str | None = None
+    minio_secret_key: str | None = None
+    minio_secure: bool = False
+    minio_source_bucket: str = "knowledge-source"
+    minio_derived_bucket: str = "knowledge-derived"
+    milvus_uri: str | None = None
+    milvus_token: str | None = None
+    external_storage_timeout_seconds: float = Field(default=5, ge=0.1, le=60)
+
+    rag_provider_mode: Literal["REMOTE", "LOCAL", "FIXTURE", "DISABLED"] = "DISABLED"
+    rag_embedding_url: str | None = None
+    rag_embedding_api_key: str | None = None
+    rag_embedding_model: str | None = None
+    rag_reranker_url: str | None = None
+    rag_reranker_api_key: str | None = None
+    rag_reranker_model: str | None = None
+    rag_llm_url: str | None = None
+    rag_llm_api_key: str | None = None
+    rag_llm_model: str | None = None
+    rag_sync_ingestion_enabled: bool = False
+    rag_max_upload_mib: int = Field(default=50, ge=1, le=200)
+    rag_evidence_min_score: float = Field(default=0.015, ge=0, le=1)
+    rag_evidence_min_lexical_coverage: float = Field(default=0.2, ge=0, le=1)
+
     @field_validator("database_url")
     @classmethod
     def require_utf8mb4_for_mysql(cls, value: str) -> str:
@@ -57,6 +84,8 @@ class Settings(BaseSettings):
         )
         if len(self.jwt_secret) < 32 or normalized in known_placeholders or looks_like_placeholder:
             raise ValueError("非测试环境必须配置至少 32 位且非占位值的 JWT_SECRET")
+        if self.rag_provider_mode == "FIXTURE" and self.app_env.casefold() != "development":
+            raise ValueError("RAG_PROVIDER_MODE=FIXTURE 仅允许 test/development")
         return self
 
     @property

@@ -13,6 +13,8 @@ os.environ["JWT_SECRET"] = "test-secret-that-is-longer-than-32-characters"
 os.environ["AI_PROVIDER_URL"] = ""
 os.environ["AI_API_KEY"] = ""
 os.environ["AI_MODEL"] = ""
+os.environ["RAG_PROVIDER_MODE"] = "FIXTURE"
+os.environ["RAG_SYNC_INGESTION_ENABLED"] = "true"
 
 from app.core.database import get_session  # noqa: E402
 from app.main import app  # noqa: E402

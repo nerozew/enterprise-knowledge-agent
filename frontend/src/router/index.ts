@@ -25,6 +25,18 @@ const routes: RouteRecordRaw[] = [
       meta: { requiresAuth: true, workspaceScoped: true },
     },
     {
+      path: '/w/:workspaceId/knowledge',
+      name: 'workspace-knowledge',
+      component: () => import('@/views/KnowledgeView.vue'),
+      meta: { requiresAuth: true, workspaceScoped: true },
+    },
+    {
+      path: '/w/:workspaceId/ask',
+      name: 'workspace-ask',
+      component: () => import('@/views/KnowledgeAskView.vue'),
+      meta: { requiresAuth: true, workspaceScoped: true },
+    },
+    {
       path: '/w/:workspaceId/members',
       name: 'workspace-members',
       component: WorkspaceMembersView,

@@ -39,6 +39,17 @@ async function handleLogout() {
           <small>企业知识工作台</small>
         </span>
       </router-link>
+      <nav v-if="workspaces.activeWorkspaceId" class="primary-nav" aria-label="工作台主导航">
+        <router-link :to="{ name: 'workspace-home', params: { workspaceId: workspaces.activeWorkspaceId } }">
+          灵感
+        </router-link>
+        <router-link :to="{ name: 'workspace-knowledge', params: { workspaceId: workspaces.activeWorkspaceId } }">
+          知识
+        </router-link>
+        <router-link :to="{ name: 'workspace-ask', params: { workspaceId: workspaces.activeWorkspaceId } }">
+          问答
+        </router-link>
+      </nav>
       <WorkspaceSwitcher />
       <div class="header-actions">
         <nav v-if="workspaces.canManage && workspaces.activeWorkspaceId" class="workspace-nav" aria-label="空间管理">

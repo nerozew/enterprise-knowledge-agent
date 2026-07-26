@@ -46,7 +46,7 @@ def _run_alembic(database_url: str, *arguments: str) -> None:
     assert result.returncode == 0, output
 
 
-def test_p1_sqlite_empty_database_upgrade_and_downgrade(tmp_path):
+def test_p2_p4_sqlite_empty_database_upgrade_and_downgrade(tmp_path):
     database = tmp_path / "p1-empty.db"
     url = _database_url(database)
     _run_alembic(url, "upgrade", "head")
@@ -54,7 +54,20 @@ def test_p1_sqlite_empty_database_upgrade_and_downgrade(tmp_path):
         revision = connection.execute(
             "SELECT version_num FROM alembic_version"
         ).fetchone()
-        assert revision == ("0005_p1_workspace_contract",)
+        assert revision == ("0007_p2_p4_integrity_and_leases",)
+        for table_name in (
+            "documents",
+            "document_versions",
+            "ingestion_jobs",
+            "ingestion_job_attempts",
+            "document_chunks",
+            "outbox_events",
+            "compensation_tasks",
+        ):
+            assert connection.execute(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?",
+                (table_name,),
+            ).fetchone() == (1,)
     _run_alembic(url, "downgrade", "base")
     with sqlite3.connect(database) as connection:
         domain_tables = connection.execute(
@@ -190,6 +203,35 @@ def test_p1_sqlite_chinese_mvp_backfill_and_composite_constraints(tmp_path):
             ("inspiration_id", "id"),
             ("tag_id", "id"),
         }.issubset(mapped_columns)
+
+
+def test_p1_database_upgrades_forward_to_p2_p4_without_losing_records(tmp_path):
+    database = tmp_path / "p1-to-p4.db"
+    url = _database_url(database)
+    _run_alembic(url, "upgrade", "0005_p1_workspace_contract")
+    with sqlite3.connect(database) as connection:
+        revision = connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone()
+        assert revision == ("0005_p1_workspace_contract",)
+        assert connection.execute(
+            "SELECT COUNT(*) FROM idempotency_records"
+        ).fetchone() == (0,)
+    _run_alembic(url, "upgrade", "head")
+    with sqlite3.connect(database) as connection:
+        revision = connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone()
+        assert revision == ("0007_p2_p4_integrity_and_leases",)
+        columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(idempotency_records)")
+        }
+        assert {
+            "status",
+            "request_hash_algorithm",
+            "operation_id",
+            "response_ref",
+        }.issubset(columns)
 
 
 @pytest.mark.skipif(

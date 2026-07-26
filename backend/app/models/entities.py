@@ -173,6 +173,14 @@ class IdempotencyRecord(Base):
     scope: Mapped[str] = mapped_column(String(80))
     key_hash: Mapped[str] = mapped_column(String(64))
     request_hash: Mapped[str] = mapped_column(String(64))
+    request_hash_algorithm: Mapped[str] = mapped_column(
+        String(16), default="SHA-256", server_default="SHA-256"
+    )
+    status: Mapped[str] = mapped_column(
+        String(16), default="SUCCEEDED", server_default="SUCCEEDED"
+    )
+    operation_id: Mapped[UUID | None] = mapped_column(nullable=True)
+    response_ref: Mapped[str | None] = mapped_column(String(512), nullable=True)
     response_status: Mapped[int] = mapped_column(Integer)
     response_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     resource_type: Mapped[str] = mapped_column(String(40))

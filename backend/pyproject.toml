@@ -16,6 +16,9 @@ dependencies = [
   "httpx>=0.28,<1",
   "mcp>=1.9,<2",
   "pydantic-settings>=2.7,<3",
+  "pypdf>=6.1,<7",
+  "python-docx>=1.2,<2",
+  "python-multipart>=0.0.20,<1",
   "pwdlib[argon2]>=0.2,<1",
   "PyJWT>=2.10,<3",
   "sqlalchemy>=2.0.36,<3",
@@ -23,6 +26,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+rag-infra = [
+  "minio>=7.2,<8",
+  "pymilvus>=2.6,<2.7",
+  "redis>=6.4,<7",
+]
 dev = [
   "aiosqlite>=0.20,<1",
   "mypy>=1.14,<2",
@@ -52,4 +60,3 @@ plugins = ["pydantic.mypy"]
 warn_unused_ignores = true
 check_untyped_defs = true
 no_implicit_optional = true
-

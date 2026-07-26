@@ -223,3 +223,158 @@ export interface AuditLogPage {
   items: AuditLog[]
   next_cursor: string | null
 }
+
+export type DocumentStatus = 'ACTIVE' | 'DELETED'
+export type DocumentFormat = 'PDF' | 'DOCX' | 'MARKDOWN' | 'TXT'
+export type DocumentVersionStatus = 'PUBLISHING' | 'PUBLISHED' | 'SUPERSEDED' | 'FAILED'
+export type IngestionJobStatus =
+  | 'QUEUED'
+  | 'PARSING'
+  | 'CHUNKING'
+  | 'STORING'
+  | 'INDEXING'
+  | 'SUCCEEDED'
+  | 'RETRY_WAIT'
+  | 'COMPENSATING'
+  | 'FAILED'
+  | 'CANCELLED'
+export type DuplicatePolicy = 'REUSE_EXISTING' | 'CREATE_NEW'
+
+export interface DocumentSummary {
+  id: string
+  workspace_id: string
+  title: string
+  status: DocumentStatus
+  version: number
+  published_version_id: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface DocumentVersionSummary {
+  id: string
+  document_id: string
+  format: DocumentFormat
+  mime_type: string
+  file_name: string
+  file_size: number
+  file_sha256: string
+  status: DocumentVersionStatus
+  parser_profile: string
+  chunk_profile: string
+  index_profile: string
+  created_at: string
+  published_at: string | null
+}
+
+export interface IngestionJobSummary {
+  id: string
+  workspace_id: string
+  document_id: string
+  document_version_id: string
+  status: IngestionJobStatus
+  stage: string
+  progress: number
+  attempt_count: number
+  retryable: boolean
+  error_code?: string
+  error_message?: string
+  version: number
+  created_at: string
+  updated_at: string
+}
+
+export interface DocumentUploadResult {
+  document: DocumentSummary
+  version: DocumentVersionSummary
+  job: IngestionJobSummary
+  reused: boolean
+}
+
+export interface DocumentQuery {
+  q?: string
+  source_format?: DocumentFormat
+  status?: DocumentStatus | DocumentVersionStatus | IngestionJobStatus
+  page?: number
+  page_size?: number
+}
+
+export interface DocumentUploadInput {
+  file: File
+  title?: string
+  duplicate_policy: DuplicatePolicy
+}
+
+export type RetrievalMode = 'DENSE' | 'SPARSE' | 'HYBRID'
+export type RetrievalFusion = 'RRF' | 'WEIGHTED'
+export type ComponentMode = 'OFF' | 'AUTO' | 'ON'
+export type SearchResponseMode = 'HITS' | 'ANSWER'
+
+export interface KnowledgeSearchFilters {
+  document_ids: string[]
+  source_formats: DocumentFormat[]
+  published_after: string | null
+  published_before: string | null
+}
+
+export interface KnowledgeSearchInput {
+  query: string
+  strategy: 'BASIC'
+  retrieval_mode: RetrievalMode
+  top_k: number
+  candidate_k: number
+  fusion: RetrievalFusion
+  rerank: ComponentMode
+  rewrite: ComponentMode
+  multi_query: boolean
+  expand_context: boolean
+  response_mode: SearchResponseMode
+  filters: KnowledgeSearchFilters
+}
+
+export interface KnowledgeHitScores {
+  dense?: number
+  sparse?: number
+  fusion: number
+  rerank?: number
+}
+
+export interface KnowledgeHit {
+  chunk_id: string
+  document_id: string
+  document_version_id: string
+  title: string
+  page: number | null
+  heading_path: string[]
+  quote: string
+  source_span_id: string
+  score: number
+  scores: KnowledgeHitScores
+  context: string
+}
+
+export interface SearchProviderSummary {
+  mode: 'REMOTE' | 'LOCAL' | 'FIXTURE' | 'DISABLED'
+  embedding: string | null
+  reranker: string | null
+  llm: string | null
+  profile: string
+}
+
+export interface KnowledgeRefusal {
+  code: string
+  message: string
+}
+
+export interface KnowledgeSearchResult {
+  query: string
+  response_mode: SearchResponseMode
+  answer: string | null
+  refusal: KnowledgeRefusal | null
+  hits: KnowledgeHit[]
+  provider: SearchProviderSummary
+  components: string[]
+  timings_ms: Record<string, number>
+  warnings: string[]
+  degraded: boolean
+}
