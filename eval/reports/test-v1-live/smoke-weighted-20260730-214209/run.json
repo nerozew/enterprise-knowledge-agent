@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "run_started_at": "2026-07-30T13:42:11.874991+00:00",
+  "status": "completed",
+  "base_url": "http://127.0.0.1:8000/api/v1",
+  "workspace_id": "4a790b5e-3e9d-45d0-a387-4a4cc56de656",
+  "dataset": {
+    "path": "D:\\MyProjects\\ai_assistant\\eval\\test-v1",
+    "version": "test-v1",
+    "manifest": {
+      "dataset_version": "test-v1",
+      "status": "FROZEN",
+      "language": "zh-CN",
+      "created_at": "2026-07-30",
+      "license": "CC0-1.0",
+      "synthetic": true,
+      "question_split": "held-out-from-dev-v1",
+      "corpus_path": "../dev-v1/corpus",
+      "corpus_snapshot": "sha256:df9b04b8b021193d7f69b22266cc36bd12c13af7d03407e71bb7a5b5ec3044f6",
+      "cases_snapshot": "sha256:7fc59af922394adbbd3118aad302b55fa2714fda3b77cd3ea3f5b87f9e816db0",
+      "corpus_documents": 8,
+      "answerable_cases": 80,
+      "unanswerable_cases": 20,
+      "default_top_k": 5,
+      "random_seed": 20260730,
+      "allowed_claim": "formal-evaluation-only",
+      "notes": [
+        "语料、人物、公司和制度均为虚构。",
+        "本候选集与 dev-v1 共用固定语料，但问题不重复。",
+        "cases.draft.jsonl 必须人工复核并全部标记 APPROVED，才能冻结为 cases.jsonl。",
+        "正式简历指标只能来自冻结版本和保存完整运行清单的原始报告。"
+      ],
+      "frozen_at": "2026-07-30T13:40:54.740661+00:00",
+      "reviewers": [
+        "NeroZe"
+      ]
+    },
+    "manifest_sha256": "c46a8d5954f287f2df2674b1c4958d6dd0a23eceea5bfe001dd79e329f6fd927",
+    "cases_sha256": "7fc59af922394adbbd3118aad302b55fa2714fda3b77cd3ea3f5b87f9e816db0",
+    "corpus_snapshot_actual": "df9b04b8b021193d7f69b22266cc36bd12c13af7d03407e71bb7a5b5ec3044f6"
+  },
+  "git": {
+    "commit": "0b3d7086d10e8357f77f6b29134df564a7205b30",
+    "branch": "codex/enterprise-rag-upgrade",
+    "dirty": true
+  },
+  "runtime": {
+    "python": "3.13.12 (tags/v3.13.12:1cbe481, Feb  3 2026, 18:22:25) [MSC v.1944 64 bit (AMD64)]",
+    "platform": "Windows-11-10.0.26200-SP0"
+  },
+  "config": {
+    "retrieval_mode": "HYBRID",
+    "top_k": 5,
+    "candidate_k": 50,
+    "fusion": "WEIGHTED",
+    "rerank": "OFF",
+    "rewrite": "OFF",
+    "multi_query": false,
+    "expand_context": true,
+    "response_mode": "HITS",
+    "dense_weight": 0.65,
+    "include_query_trace": true,
+    "filters": {}
+  },
+  "selected_case_ids": [
+    "test-001"
+  ],
+  "repeat": 1,
+  "run_finished_at": "2026-07-30T13:42:13.684485+00:00",
+  "metrics_file": "metrics.json",
+  "results_file": "results.jsonl",
+  "failures_file": "failures.jsonl"
+}

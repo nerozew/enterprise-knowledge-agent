@@ -8,6 +8,7 @@ import { useInspirationStore } from './inspirations'
 import { useTagStore } from './tags'
 import { useDocumentStore } from './documents'
 import { useKnowledgeSearchStore } from './knowledgeSearch'
+import { useAgentStore } from './agent'
 
 const LAST_WORKSPACE_PREFIX = 'inspiration-assistant.last-workspace'
 
@@ -49,6 +50,7 @@ export const useWorkspaceStore = defineStore('workspaces', () => {
     useTagStore().activateWorkspace(workspaceId)
     useDocumentStore().activateWorkspace(workspaceId)
     useKnowledgeSearchStore().activateWorkspace(workspaceId)
+    useAgentStore().activateWorkspace(workspaceId)
   }
 
   function selectLocal(workspaceId: string, userId: string) {

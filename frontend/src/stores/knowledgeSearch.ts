@@ -17,6 +17,7 @@ export const defaultKnowledgeSearchInput: KnowledgeSearchInput = {
   multi_query: false,
   expand_context: true,
   response_mode: 'HITS',
+  include_query_trace: false,
   filters: {
     document_ids: [],
     source_formats: [],
@@ -35,6 +36,13 @@ export const useKnowledgeSearchStore = defineStore('knowledge-search', () => {
   let generation = 0
 
   const hasResult = computed(() => result.value !== null)
+
+  function requestInput(query: string): KnowledgeSearchInput {
+    const { include_query_trace: includeQueryTrace, ...input } = form.value
+    return includeQueryTrace
+      ? { ...input, query, include_query_trace: true }
+      : { ...input, query }
+  }
 
   function activateWorkspace(nextWorkspaceId: string | null) {
     if (workspaceId.value === nextWorkspaceId) return
@@ -63,7 +71,7 @@ export const useKnowledgeSearchStore = defineStore('knowledge-search', () => {
     try {
       const response = await knowledgeSearchApi.search(
         targetWorkspaceId,
-        { ...form.value, query: normalizedQuery },
+        requestInput(normalizedQuery),
         controller.signal,
       )
       if (controller.signal.aborted || requestGeneration !== generation || workspaceId.value !== targetWorkspaceId) return

@@ -5,6 +5,7 @@ from uuid import UUID
 
 from sqlalchemy import delete, exists, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.models.knowledge import (
     Document,
@@ -46,6 +47,7 @@ class KnowledgeRepository:
         q: str | None = None,
         source_format: str | None = None,
         status: str | None = None,
+        version_status: str | None = None,
     ) -> tuple[list[Document], int]:
         filters = [Document.workspace_id == workspace_id]
         if status is not None:
@@ -61,16 +63,42 @@ class KnowledgeRepository:
             )
         if q:
             filters.append(Document.title.contains(q, autoescape=True))
-        if source_format:
-            filters.append(
-                exists(
-                    select(DocumentVersion.id).where(
-                        DocumentVersion.workspace_id == workspace_id,
-                        DocumentVersion.document_id == Document.id,
-                        DocumentVersion.format == source_format,
-                        DocumentVersion.status == DocumentVersionStatus.PUBLISHED.value,
+        if source_format is not None or version_status is not None:
+            target_version = aliased(DocumentVersion)
+            target_status = (
+                version_status
+                if version_status is not None
+                else DocumentVersionStatus.PUBLISHED.value
+            )
+            if target_status == DocumentVersionStatus.PUBLISHED.value:
+                target_id_filter = target_version.id == Document.published_version_id
+            else:
+                latest_version = aliased(DocumentVersion)
+                latest_version_id = (
+                    select(latest_version.id)
+                    .where(
+                        latest_version.workspace_id == workspace_id,
+                        latest_version.document_id == Document.id,
                     )
+                    .order_by(
+                        latest_version.created_at.desc(),
+                        latest_version.id.desc(),
+                    )
+                    .limit(1)
+                    .correlate(Document)
+                    .scalar_subquery()
                 )
+                target_id_filter = target_version.id == latest_version_id
+            version_filters = [
+                target_version.workspace_id == workspace_id,
+                target_version.document_id == Document.id,
+                target_id_filter,
+                target_version.status == target_status,
+            ]
+            if source_format is not None:
+                version_filters.append(target_version.format == source_format)
+            filters.append(
+                exists(select(target_version.id).where(*version_filters).correlate(Document))
             )
         total = int(
             await self.session.scalar(
@@ -143,7 +171,10 @@ class KnowledgeRepository:
                 await self.session.scalars(
                     select(DocumentVersion)
                     .where(*filters)
-                    .order_by(DocumentVersion.created_at.desc())
+                    .order_by(
+                        DocumentVersion.created_at.desc(),
+                        DocumentVersion.id.desc(),
+                    )
                 )
             ).all()
         )

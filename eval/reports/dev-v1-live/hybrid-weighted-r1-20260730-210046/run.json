@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "run_started_at": "2026-07-30T13:00:47.435483+00:00",
+  "status": "completed",
+  "base_url": "http://127.0.0.1:8000/api/v1",
+  "workspace_id": "4a790b5e-3e9d-45d0-a387-4a4cc56de656",
+  "dataset": {
+    "path": "D:\\MyProjects\\ai_assistant\\eval\\dev-v1",
+    "version": "dev-v1",
+    "manifest": {
+      "dataset_version": "dev-v1",
+      "language": "zh-CN",
+      "created_at": "2026-07-26",
+      "license": "CC0-1.0",
+      "synthetic": true,
+      "corpus_snapshot": "sha256:77651df5120a0280b10932a1efd88734482ffa8649555ec9c6bb73e3d2e3a964",
+      "cases_snapshot": "sha256:9eb6e7508e29b0168bcc164b88610052e07b6759f8787ab9f7762d68b8707683",
+      "corpus_documents": 8,
+      "answerable_cases": 20,
+      "unanswerable_cases": 4,
+      "default_top_k": 5,
+      "random_seed": 20260726,
+      "allowed_claim": "development-regression-only",
+      "notes": [
+        "语料与人物、公司、制度均为虚构。",
+        "不得用 FIXTURE Provider 的质量或延迟数字写入简历。",
+        "正式 P10 需要独立的 100 题人工标注集和盲测报告。"
+      ]
+    },
+    "manifest_sha256": "5ed3f546c6a1f6272c0a3e2507da3a86c42b6179a209ec009ef0dd77fb95dcc9",
+    "cases_sha256": "9eb6e7508e29b0168bcc164b88610052e07b6759f8787ab9f7762d68b8707683",
+    "corpus_snapshot_actual": "df9b04b8b021193d7f69b22266cc36bd12c13af7d03407e71bb7a5b5ec3044f6"
+  },
+  "git": {
+    "commit": "0b3d7086d10e8357f77f6b29134df564a7205b30",
+    "branch": "codex/enterprise-rag-upgrade",
+    "dirty": true
+  },
+  "runtime": {
+    "python": "3.13.12 (tags/v3.13.12:1cbe481, Feb  3 2026, 18:22:25) [MSC v.1944 64 bit (AMD64)]",
+    "platform": "Windows-11-10.0.26200-SP0"
+  },
+  "config": {
+    "retrieval_mode": "HYBRID",
+    "top_k": 5,
+    "candidate_k": 30,
+    "fusion": "WEIGHTED",
+    "rerank": "OFF",
+    "rewrite": "OFF",
+    "multi_query": false,
+    "expand_context": false,
+    "response_mode": "HITS",
+    "dense_weight": 0.65,
+    "include_query_trace": true,
+    "filters": {}
+  },
+  "selected_case_ids": [
+    "dev-001",
+    "dev-002",
+    "dev-003",
+    "dev-004",
+    "dev-005",
+    "dev-006",
+    "dev-007",
+    "dev-008",
+    "dev-009",
+    "dev-010",
+    "dev-011",
+    "dev-012",
+    "dev-013",
+    "dev-014",
+    "dev-015",
+    "dev-016",
+    "dev-017",
+    "dev-018",
+    "dev-019",
+    "dev-020",
+    "dev-021",
+    "dev-022",
+    "dev-023",
+    "dev-024"
+  ],
+  "repeat": 1,
+  "run_finished_at": "2026-07-30T13:00:59.589615+00:00",
+  "metrics_file": "metrics.json",
+  "results_file": "results.jsonl",
+  "failures_file": "failures.jsonl"
+}

@@ -51,9 +51,16 @@ class Settings(BaseSettings):
     rag_reranker_url: str | None = None
     rag_reranker_api_key: str | None = None
     rag_reranker_model: str | None = None
+    rag_reranker_profile: Literal["OPENAI_COMPATIBLE", "ALIBABA_QWEN3"] = (
+        "OPENAI_COMPATIBLE"
+    )
+    rag_reranker_endpoint: str | None = Field(default=None, max_length=256)
     rag_llm_url: str | None = None
     rag_llm_api_key: str | None = None
     rag_llm_model: str | None = None
+    rag_llm_profile: Literal["OPENAI_JSON_SCHEMA", "ALIBABA_QWEN"] = (
+        "OPENAI_JSON_SCHEMA"
+    )
     rag_sync_ingestion_enabled: bool = False
     rag_max_upload_mib: int = Field(default=50, ge=1, le=200)
     rag_evidence_min_score: float = Field(default=0.015, ge=0, le=1)
@@ -67,8 +74,40 @@ class Settings(BaseSettings):
             return f"{value}{separator}charset=utf8mb4"
         return value
 
+    @field_validator("rag_reranker_endpoint")
+    @classmethod
+    def require_relative_provider_endpoint(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if any(ord(character) < 32 or ord(character) == 127 for character in value):
+            raise ValueError("RAG_RERANKER_ENDPOINT must be a relative URL path")
+        endpoint = value.strip()
+        if not endpoint:
+            return None
+        segments = endpoint.split("/")
+        if (
+            endpoint.startswith("/")
+            or "\\" in endpoint
+            or "%" in endpoint
+            or "://" in endpoint
+            or ":" in endpoint
+            or "?" in endpoint
+            or "#" in endpoint
+            or any(segment in {".", ".."} for segment in segments)
+        ):
+            raise ValueError("RAG_RERANKER_ENDPOINT must be a relative URL path")
+        return endpoint
+
     @model_validator(mode="after")
     def reject_unsafe_jwt_secret(self) -> Settings:
+        if (
+            self.rag_reranker_profile == "ALIBABA_QWEN3"
+            and self.rag_reranker_model
+            and self.rag_reranker_model != "qwen3-rerank"
+        ):
+            raise ValueError(
+                "RAG_RERANKER_PROFILE=ALIBABA_QWEN3 requires RAG_RERANKER_MODEL=qwen3-rerank"
+            )
         if self.app_env.casefold() in {"test", "testing"}:
             return self
         normalized = self.jwt_secret.strip().casefold()

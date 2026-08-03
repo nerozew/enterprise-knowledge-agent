@@ -41,6 +41,7 @@ app.add_middleware(
         "Content-Type",
         "Idempotency-Key",
         "If-Match",
+        "Last-Event-ID",
         "X-Request-ID",
     ],
     expose_headers=["X-Request-ID", "Deprecation", "Link"],

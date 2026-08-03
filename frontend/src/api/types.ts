@@ -292,9 +292,10 @@ export interface DocumentUploadResult {
 }
 
 export interface DocumentQuery {
-  q?: string
-  source_format?: DocumentFormat
-  status?: DocumentStatus | DocumentVersionStatus | IngestionJobStatus
+  q?: string | undefined
+  source_format?: DocumentFormat | undefined
+  status?: DocumentStatus | undefined
+  version_status?: DocumentVersionStatus | undefined
   page?: number
   page_size?: number
 }
@@ -329,6 +330,7 @@ export interface KnowledgeSearchInput {
   multi_query: boolean
   expand_context: boolean
   response_mode: SearchResponseMode
+  include_query_trace?: boolean
   filters: KnowledgeSearchFilters
 }
 
@@ -337,6 +339,38 @@ export interface KnowledgeHitScores {
   sparse?: number
   fusion: number
   rerank?: number
+}
+
+export type ScoreAvailability =
+  | 'AVAILABLE'
+  | 'NOT_APPLICABLE'
+  | 'NOT_EXPOSED'
+  | 'NOT_RUN'
+
+export interface ScoreContribution {
+  query_index: number
+  value: number
+  rank: number | null
+  source: string | null
+}
+
+export interface ScoreStage {
+  availability: ScoreAvailability
+  value: number | null
+  rank: number | null
+  method: string | null
+  rrf_k: number | null
+  per_query: ScoreContribution[]
+  contributions: ScoreContribution[]
+}
+
+export interface KnowledgeScoreDetails {
+  dense_similarity: ScoreStage
+  bm25: ScoreStage
+  channel_fusion: ScoreStage
+  query_fusion: ScoreStage
+  rerank: ScoreStage
+  final: ScoreStage
 }
 
 export interface KnowledgeHit {
@@ -350,6 +384,7 @@ export interface KnowledgeHit {
   source_span_id: string
   score: number
   scores: KnowledgeHitScores
+  score_details?: KnowledgeScoreDetails
   context: string
 }
 
@@ -366,6 +401,58 @@ export interface KnowledgeRefusal {
   message: string
 }
 
+export interface FusionScoringSummary {
+  method: string | null
+  applied: boolean
+  rrf_k: number | null
+}
+
+export interface KnowledgeSearchScoring {
+  version: 1
+  requested_retrieval_mode: RetrievalMode
+  effective_retrieval_mode: RetrievalMode
+  query_count: number
+  channel_fusion: FusionScoringSummary
+  query_fusion: FusionScoringSummary
+  rerank_applied: boolean
+}
+
+export type KnowledgeQueryKind = 'ORIGINAL' | 'REWRITE'
+
+export interface KnowledgeQueryTraceItem {
+  index: number
+  kind: KnowledgeQueryKind
+  text: string
+}
+
+export interface KnowledgeQueryTrace {
+  exposed: boolean
+  items: KnowledgeQueryTraceItem[]
+  redaction_reason: string | null
+}
+
+export type AnswerabilityStatus = 'SUPPORTED' | 'REJECTED' | 'NOT_EVALUATED'
+export type AnswerabilityMethod =
+  | 'GROUNDED_ANSWER_LLM'
+  | 'HEURISTIC_GATE'
+  | 'NOT_RUN'
+
+export interface KnowledgeAnswerability {
+  status: AnswerabilityStatus
+  method: AnswerabilityMethod
+  reason_code: string
+  precheck_code: string
+  provider_called: boolean
+  checked_hit_ids: string[]
+  supporting_hit_ids: string[]
+  raw_top_score?: number
+  gate_score?: number
+  score_threshold?: number
+  lexical_coverage?: number
+  lexical_threshold?: number
+  lexical_passed?: boolean
+}
+
 export interface KnowledgeSearchResult {
   query: string
   response_mode: SearchResponseMode
@@ -373,6 +460,9 @@ export interface KnowledgeSearchResult {
   refusal: KnowledgeRefusal | null
   hits: KnowledgeHit[]
   provider: SearchProviderSummary
+  scoring?: KnowledgeSearchScoring
+  query_trace?: KnowledgeQueryTrace
+  answerability?: KnowledgeAnswerability
   components: string[]
   timings_ms: Record<string, number>
   warnings: string[]

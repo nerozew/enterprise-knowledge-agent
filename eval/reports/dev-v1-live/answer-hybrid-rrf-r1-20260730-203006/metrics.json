@@ -1,0 +1,34 @@
+{
+  "request_count": 24,
+  "completed_count": 24,
+  "failed_count": 0,
+  "document": {
+    "recall_at_1": 0.8125,
+    "recall_at_5": 0.8333333333333334,
+    "mrr_at_5": 0.8333333333333334,
+    "ndcg_at_5": 0.8264163013499228
+  },
+  "source_span": {
+    "recall_at_1": 0.975,
+    "recall_at_5": 1.0,
+    "mrr_at_5": 1.0
+  },
+  "latency_ms": {
+    "retrieval_p50": 180.27379998238757,
+    "retrieval_p95": 230.74266004841772,
+    "total_p50": 1840.9553499659523,
+    "total_p95": 2785.1037250366057,
+    "client_p50": 1852.2147999610752,
+    "client_p95": 2794.579155062092
+  },
+  "answerability": {
+    "answerable_observations": 20,
+    "unanswerable_observations": 4,
+    "correct_refusal_rate": 1.0,
+    "false_refusal_rate": 0.0,
+    "false_acceptance_rate": 0.0,
+    "gold_citation_support_rate": 1.0,
+    "false_refusal_case_ids": [],
+    "false_acceptance_case_ids": []
+  }
+}

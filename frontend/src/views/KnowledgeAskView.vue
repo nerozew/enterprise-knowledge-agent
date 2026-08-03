@@ -1,8 +1,12 @@
 <script setup lang="ts">
 import { computed, watch } from 'vue'
 import AppShell from '@/components/AppShell.vue'
+import AnswerabilityDiagnostics from '@/components/AnswerabilityDiagnostics.vue'
+import AnswerabilityStatus from '@/components/AnswerabilityStatus.vue'
 import CitationCard from '@/components/CitationCard.vue'
+import QueryTraceDetails from '@/components/QueryTraceDetails.vue'
 import RetrievalSettings from '@/components/RetrievalSettings.vue'
+import { buildKnowledgeResultPresentation } from '@/features/knowledge/resultPresentation'
 import { totalTimingMs } from '@/features/knowledge/timings'
 import { useKnowledgeSearchStore } from '@/stores/knowledgeSearch'
 import { useWorkspaceStore } from '@/stores/workspaces'
@@ -13,6 +17,17 @@ const workspaceId = computed(() => workspaces.activeWorkspaceId ?? '')
 const timingTotal = computed(() => {
   const timings = search.result?.timings_ms
   return timings ? totalTimingMs(timings) : 0
+})
+const resultPresentation = computed(() => (
+  search.result ? buildKnowledgeResultPresentation(search.result) : null
+))
+const supportingHitIds = computed(() => {
+  const answerability = search.result?.answerability
+  return new Set(
+    answerability?.status === 'SUPPORTED'
+      ? answerability.supporting_hit_ids
+      : [],
+  )
 })
 
 watch(
@@ -95,7 +110,7 @@ watch(
           v-else-if="search.result.refusal"
           type="info"
           :title="search.result.refusal.message"
-          description="当前证据不足，因此没有生成答案。可以调整问题、过滤器或补充已发布文档。"
+          :description="resultPresentation?.refusalDescription"
           show-icon
           :closable="false"
         >
@@ -103,11 +118,22 @@ watch(
             <el-tag size="small" effect="plain">{{ search.result.refusal.code }}</el-tag>
           </template>
         </el-alert>
+        <AnswerabilityStatus
+          v-if="search.result.answerability"
+          :answerability="search.result.answerability"
+          :response-mode="search.result.response_mode"
+        />
 
         <div class="result-summary">
           <div>
-            <p class="eyebrow">证据来源</p>
-            <h2>{{ search.result.hits.length ? `${search.result.hits.length} 条可复核片段` : '没有找到足够证据' }}</h2>
+            <p class="eyebrow">{{ resultPresentation?.eyebrow }}</p>
+            <h2>{{ resultPresentation?.title }}</h2>
+            <p
+              v-if="resultPresentation?.candidateNotice"
+              class="candidate-notice"
+            >
+              {{ resultPresentation.candidateNotice }}
+            </p>
           </div>
           <div class="provider-summary">
             <span>{{ search.result.provider.mode }} · {{ search.result.provider.profile }}</span>
@@ -122,12 +148,22 @@ watch(
             :hit="hit"
             :rank="index + 1"
             :workspace-id="workspaceId"
+            :scoring="search.result.scoring"
+            :supports-answer="supportingHitIds.has(hit.chunk_id)"
           />
         </div>
-        <el-empty v-else description="没有命中当前发布版本。系统不会用无来源内容补写答案。" />
+        <el-empty v-else :description="resultPresentation?.emptyDescription" />
 
         <details class="timing-details">
-          <summary>查看实际 Provider、组件与耗时</summary>
+          <summary>查看实际 Provider、组件、检索诊断与耗时</summary>
+          <AnswerabilityDiagnostics
+            v-if="search.result.answerability"
+            :answerability="search.result.answerability"
+          />
+          <QueryTraceDetails
+            v-if="search.form.include_query_trace && search.result.query_trace"
+            :trace="search.result.query_trace"
+          />
           <dl>
             <template v-for="(value, name) in search.result.timings_ms" :key="name">
               <dt>{{ name }}</dt><dd>{{ value.toFixed(1) }} ms</dd>

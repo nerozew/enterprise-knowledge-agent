@@ -8,9 +8,20 @@ import type {
   DocumentVersionSummary,
   IngestionJobStatus,
   IngestionJobSummary,
+  AnswerabilityMethod,
+  AnswerabilityStatus,
+  KnowledgeAnswerability,
   KnowledgeHit,
+  KnowledgeQueryKind,
+  KnowledgeQueryTrace,
+  KnowledgeScoreDetails,
+  KnowledgeSearchScoring,
   KnowledgeSearchResult,
   Page,
+  RetrievalMode,
+  ScoreAvailability,
+  ScoreContribution,
+  ScoreStage,
   SearchProviderSummary,
   SearchResponseMode,
 } from './types'
@@ -34,6 +45,12 @@ function string(value: unknown, field: string): string {
   return value
 }
 
+function nonEmptyString(value: unknown, field: string): string {
+  const parsed = string(value, field)
+  if (!parsed.trim()) invalid(field)
+  return parsed
+}
+
 function nullableString(value: unknown, field: string): string | null {
   if (value === null || value === undefined) return null
   return string(value, field)
@@ -42,6 +59,12 @@ function nullableString(value: unknown, field: string): string | null {
 function number(value: unknown, field: string): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) invalid(field)
   return value
+}
+
+function integer(value: unknown, field: string, minimum: number): number {
+  const parsed = number(value, field)
+  if (!Number.isInteger(parsed) || parsed < minimum) invalid(field)
+  return parsed
 }
 
 function nullableNumber(value: unknown, field: string): number | null {
@@ -80,6 +103,24 @@ const jobStatuses = [
   'CANCELLED',
 ] as const satisfies readonly IngestionJobStatus[]
 const responseModes = ['HITS', 'ANSWER'] as const satisfies readonly SearchResponseMode[]
+const retrievalModes = ['DENSE', 'SPARSE', 'HYBRID'] as const satisfies readonly RetrievalMode[]
+const queryKinds = ['ORIGINAL', 'REWRITE'] as const satisfies readonly KnowledgeQueryKind[]
+const answerabilityStatuses = [
+  'SUPPORTED',
+  'REJECTED',
+  'NOT_EVALUATED',
+] as const satisfies readonly AnswerabilityStatus[]
+const answerabilityMethods = [
+  'GROUNDED_ANSWER_LLM',
+  'HEURISTIC_GATE',
+  'NOT_RUN',
+] as const satisfies readonly AnswerabilityMethod[]
+const scoreAvailabilities = [
+  'AVAILABLE',
+  'NOT_APPLICABLE',
+  'NOT_EXPOSED',
+  'NOT_RUN',
+] as const satisfies readonly ScoreAvailability[]
 
 export function parseDocument(value: unknown): DocumentSummary {
   const item = object(value, 'document')
@@ -173,6 +214,65 @@ function parseProvider(value: unknown): SearchProviderSummary {
   }
 }
 
+function parseScoreContribution(value: unknown, field: string): ScoreContribution {
+  const contribution = object(value, field)
+  const rank = nullableNumber(contribution.rank, `${field}.rank`)
+  if (rank !== null && (!Number.isInteger(rank) || rank < 1)) invalid(`${field}.rank`)
+  return {
+    query_index: integer(contribution.query_index, `${field}.query_index`, 0),
+    value: number(contribution.value, `${field}.value`),
+    rank,
+    source: nullableString(contribution.source, `${field}.source`),
+  }
+}
+
+function parseScoreContributions(value: unknown, field: string): ScoreContribution[] {
+  if (!Array.isArray(value)) invalid(field)
+  return value.map((entry, index) => parseScoreContribution(entry, `${field}.${index}`))
+}
+
+function parseScoreStage(value: unknown, field: string): ScoreStage {
+  const stage = object(value, field)
+  const availability = enumeration(stage.availability, scoreAvailabilities, `${field}.availability`)
+  const scoreValue = nullableNumber(stage.value, `${field}.value`)
+  const rank = nullableNumber(stage.rank, `${field}.rank`)
+  const rrfK = nullableNumber(stage.rrf_k, `${field}.rrf_k`)
+  if (availability === 'AVAILABLE' && scoreValue === null) invalid(`${field}.value`)
+  if (availability !== 'AVAILABLE' && scoreValue !== null) invalid(`${field}.value`)
+  if (rank !== null && (!Number.isInteger(rank) || rank < 1)) invalid(`${field}.rank`)
+  if (rrfK !== null && (!Number.isInteger(rrfK) || rrfK < 1)) invalid(`${field}.rrf_k`)
+  return {
+    availability,
+    value: scoreValue,
+    rank,
+    method: nullableString(stage.method, `${field}.method`),
+    rrf_k: rrfK,
+    per_query: parseScoreContributions(stage.per_query, `${field}.per_query`),
+    contributions: parseScoreContributions(stage.contributions, `${field}.contributions`),
+  }
+}
+
+function parseScoreDetails(value: unknown): KnowledgeScoreDetails {
+  const details = object(value, 'search.hit.score_details')
+  return {
+    dense_similarity: parseScoreStage(
+      details.dense_similarity,
+      'search.hit.score_details.dense_similarity',
+    ),
+    bm25: parseScoreStage(details.bm25, 'search.hit.score_details.bm25'),
+    channel_fusion: parseScoreStage(
+      details.channel_fusion,
+      'search.hit.score_details.channel_fusion',
+    ),
+    query_fusion: parseScoreStage(
+      details.query_fusion,
+      'search.hit.score_details.query_fusion',
+    ),
+    rerank: parseScoreStage(details.rerank, 'search.hit.score_details.rerank'),
+    final: parseScoreStage(details.final, 'search.hit.score_details.final'),
+  }
+}
+
 function parseHit(value: unknown): KnowledgeHit {
   const hit = object(value, 'search.hit')
   const scoreData = object(hit.scores, 'search.hit.scores')
@@ -195,7 +295,155 @@ function parseHit(value: unknown): KnowledgeHit {
       fusion: number(scoreData.fusion, 'search.hit.scores.fusion'),
       ...(rerank === null ? {} : { rerank }),
     },
+    ...(hit.score_details === undefined
+      ? {}
+      : { score_details: parseScoreDetails(hit.score_details) }),
     context: string(hit.context, 'search.hit.context'),
+  }
+}
+
+function parseFusionScoring(value: unknown, field: string) {
+  const fusion = object(value, field)
+  const rrfK = nullableNumber(fusion.rrf_k, `${field}.rrf_k`)
+  if (rrfK !== null && (!Number.isInteger(rrfK) || rrfK < 1)) invalid(`${field}.rrf_k`)
+  return {
+    method: nullableString(fusion.method, `${field}.method`),
+    applied: boolean(fusion.applied, `${field}.applied`),
+    rrf_k: rrfK,
+  }
+}
+
+function parseSearchScoring(value: unknown): KnowledgeSearchScoring {
+  const scoring = object(value, 'search.scoring')
+  const version = integer(scoring.version, 'search.scoring.version', 1)
+  if (version !== 1) invalid('search.scoring.version')
+  return {
+    version,
+    requested_retrieval_mode: enumeration(
+      scoring.requested_retrieval_mode,
+      retrievalModes,
+      'search.scoring.requested_retrieval_mode',
+    ),
+    effective_retrieval_mode: enumeration(
+      scoring.effective_retrieval_mode,
+      retrievalModes,
+      'search.scoring.effective_retrieval_mode',
+    ),
+    query_count: integer(scoring.query_count, 'search.scoring.query_count', 1),
+    channel_fusion: parseFusionScoring(
+      scoring.channel_fusion,
+      'search.scoring.channel_fusion',
+    ),
+    query_fusion: parseFusionScoring(
+      scoring.query_fusion,
+      'search.scoring.query_fusion',
+    ),
+    rerank_applied: boolean(scoring.rerank_applied, 'search.scoring.rerank_applied'),
+  }
+}
+
+function parseQueryTrace(value: unknown): KnowledgeQueryTrace {
+  const trace = object(value, 'search.query_trace')
+  if (!Array.isArray(trace.items)) invalid('search.query_trace.items')
+  return {
+    exposed: boolean(trace.exposed, 'search.query_trace.exposed'),
+    items: trace.items.map((value, index) => {
+      const item = object(value, `search.query_trace.items.${index}`)
+      return {
+        index: integer(item.index, `search.query_trace.items.${index}.index`, 0),
+        kind: enumeration(
+          item.kind,
+          queryKinds,
+          `search.query_trace.items.${index}.kind`,
+        ),
+        text: string(item.text, `search.query_trace.items.${index}.text`),
+      }
+    }),
+    redaction_reason: nullableString(
+      trace.redaction_reason,
+      'search.query_trace.redaction_reason',
+    ),
+  }
+}
+
+function parseAnswerability(value: unknown): KnowledgeAnswerability {
+  const diagnostic = object(value, 'search.answerability')
+  const lexicalCoverage = diagnostic.lexical_coverage === undefined
+    ? undefined
+    : number(diagnostic.lexical_coverage, 'search.answerability.lexical_coverage')
+  const lexicalThreshold = diagnostic.lexical_threshold === undefined
+    ? undefined
+    : number(diagnostic.lexical_threshold, 'search.answerability.lexical_threshold')
+  const scoreThreshold = diagnostic.score_threshold === undefined
+    ? undefined
+    : number(diagnostic.score_threshold, 'search.answerability.score_threshold')
+  if (scoreThreshold !== undefined && scoreThreshold < 0) {
+    invalid('search.answerability.score_threshold')
+  }
+  if (lexicalCoverage !== undefined && (lexicalCoverage < 0 || lexicalCoverage > 1)) {
+    invalid('search.answerability.lexical_coverage')
+  }
+  if (lexicalThreshold !== undefined && (lexicalThreshold < 0 || lexicalThreshold > 1)) {
+    invalid('search.answerability.lexical_threshold')
+  }
+  return {
+    status: enumeration(
+      diagnostic.status,
+      answerabilityStatuses,
+      'search.answerability.status',
+    ),
+    method: enumeration(
+      diagnostic.method,
+      answerabilityMethods,
+      'search.answerability.method',
+    ),
+    reason_code: nonEmptyString(
+      diagnostic.reason_code,
+      'search.answerability.reason_code',
+    ),
+    precheck_code: nonEmptyString(
+      diagnostic.precheck_code,
+      'search.answerability.precheck_code',
+    ),
+    provider_called: boolean(
+      diagnostic.provider_called,
+      'search.answerability.provider_called',
+    ),
+    checked_hit_ids: strings(
+      diagnostic.checked_hit_ids,
+      'search.answerability.checked_hit_ids',
+    ),
+    supporting_hit_ids: strings(
+      diagnostic.supporting_hit_ids,
+      'search.answerability.supporting_hit_ids',
+    ),
+    ...(diagnostic.raw_top_score === undefined
+      ? {}
+      : {
+          raw_top_score: number(
+            diagnostic.raw_top_score,
+            'search.answerability.raw_top_score',
+          ),
+        }),
+    ...(diagnostic.gate_score === undefined
+      ? {}
+      : {
+          gate_score: number(
+            diagnostic.gate_score,
+            'search.answerability.gate_score',
+          ),
+        }),
+    ...(scoreThreshold === undefined ? {} : { score_threshold: scoreThreshold }),
+    ...(lexicalCoverage === undefined ? {} : { lexical_coverage: lexicalCoverage }),
+    ...(lexicalThreshold === undefined ? {} : { lexical_threshold: lexicalThreshold }),
+    ...(diagnostic.lexical_passed === undefined
+      ? {}
+      : {
+          lexical_passed: boolean(
+            diagnostic.lexical_passed,
+            'search.answerability.lexical_passed',
+          ),
+        }),
   }
 }
 
@@ -224,6 +472,13 @@ export function parseSearchResult(value: unknown): KnowledgeSearchResult {
         },
     hits: result.hits.map(parseHit),
     provider: parseProvider(result.provider),
+    ...(result.scoring === undefined ? {} : { scoring: parseSearchScoring(result.scoring) }),
+    ...(result.query_trace === undefined
+      ? {}
+      : { query_trace: parseQueryTrace(result.query_trace) }),
+    ...(result.answerability === undefined
+      ? {}
+      : { answerability: parseAnswerability(result.answerability) }),
     components: strings(result.components, 'search.components'),
     timings_ms: timingsMs,
     warnings: strings(result.warnings, 'search.warnings'),

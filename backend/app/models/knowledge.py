@@ -235,6 +235,13 @@ class DocumentChunk(Base):
         UniqueConstraint(
             "document_version_id", "source_span_id", "kind", name="uq_chunks_version_span_kind"
         ),
+        UniqueConstraint(
+            "workspace_id",
+            "document_version_id",
+            "id",
+            "source_span_id",
+            name="uq_chunks_workspace_version_id_span",
+        ),
         Index(
             "ix_chunks_workspace_version_kind_order",
             "workspace_id",

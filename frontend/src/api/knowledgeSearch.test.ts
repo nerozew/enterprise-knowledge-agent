@@ -36,6 +36,7 @@ describe('知识检索 API 契约', () => {
       multi_query: false,
       expand_context: true,
       response_mode: 'HITS',
+      include_query_trace: true,
       filters: {
         document_ids: ['doc-1'],
         source_formats: ['PDF'],
@@ -49,6 +50,7 @@ describe('知识检索 API 契约', () => {
     expect(post).toHaveBeenCalledWith(
       '/workspaces/workspace-1/search',
       expect.objectContaining({
+        include_query_trace: true,
         filters: {
           document_ids: ['doc-1'],
           source_formats: ['PDF'],

@@ -3,6 +3,7 @@ import type { ApiErrorPayload } from './types'
 
 export const AUTH_STORAGE_KEY = 'inspiration-assistant.auth'
 export const UNAUTHORIZED_EVENT = 'auth:unauthorized'
+export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api/v1'
 
 export class ApiError extends Error {
   readonly code: string
@@ -29,7 +30,7 @@ interface StoredAuth {
   token?: unknown
 }
 
-function readToken(): string | null {
+export function readAccessToken(): string | null {
   const raw = localStorage.getItem(AUTH_STORAGE_KEY)
   if (!raw) return null
   try {
@@ -87,14 +88,14 @@ export function mapApiError(error: unknown): ApiError {
 }
 
 export const apiClient = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE_URL || '/api/v1',
+  baseURL: API_BASE_URL,
   timeout: Number(import.meta.env.VITE_REQUEST_TIMEOUT_MS || 15_000),
-  headers: { 'Content-Type': 'application/json' },
+  // headers: { 'Content-Type': 'application/json' },
   paramsSerializer: { serialize: serializeParams },
 })
 
 apiClient.interceptors.request.use((config: InternalAxiosRequestConfig) => {
-  const token = readToken()
+  const token = readAccessToken()
   if (token) config.headers.Authorization = `Bearer ${token}`
   return config
 })

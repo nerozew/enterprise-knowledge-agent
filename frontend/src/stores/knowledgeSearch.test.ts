@@ -62,4 +62,25 @@ describe('知识检索 store', () => {
 
     expect(store.errorMessage).toContain('只返回检索结果')
   })
+
+  it('默认省略 Query Trace 参数，显式开启后才发送 true', async () => {
+    vi.mocked(knowledgeSearchApi.search).mockImplementation(
+      async (_workspaceId, input) => result(input.query),
+    )
+    const store = useKnowledgeSearchStore()
+    store.activateWorkspace('a')
+    store.form.query = '默认检索'
+
+    expect(store.form.include_query_trace).toBe(false)
+    await store.search()
+    expect(vi.mocked(knowledgeSearchApi.search).mock.calls[0]?.[1])
+      .not.toHaveProperty('include_query_trace')
+
+    store.form.query = '诊断检索'
+    store.form.include_query_trace = true
+    await store.search()
+
+    expect(vi.mocked(knowledgeSearchApi.search).mock.calls[1]?.[1])
+      .toMatchObject({ query: '诊断检索', include_query_trace: true })
+  })
 })

@@ -2,6 +2,40 @@ import { apiClient } from './client'
 import { documentApi } from './documents'
 
 describe('知识文档 API', () => {
+  it('组合序列化文档格式与版本状态筛选，不混用文档状态参数', async () => {
+    const originalAdapter = apiClient.defaults.adapter
+    const requestedUris: string[] = []
+    apiClient.defaults.adapter = async (config) => {
+      requestedUris.push(apiClient.getUri(config))
+      return {
+        data: { items: [], total: 0, page: 1, page_size: 12 },
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        config,
+      }
+    }
+
+    try {
+      await documentApi.list('workspace-1', {
+        source_format: 'MARKDOWN',
+        version_status: 'PUBLISHED',
+      })
+      await documentApi.list('workspace-1', {
+        source_format: undefined,
+        version_status: undefined,
+      })
+    } finally {
+      apiClient.defaults.adapter = originalAdapter
+    }
+
+    const serializedQuery = requestedUris[0]?.split('?')[1] ?? ''
+    const searchParams = new URLSearchParams(serializedQuery)
+    expect(serializedQuery).toBe('source_format=MARKDOWN&version_status=PUBLISHED')
+    expect(searchParams.has('status')).toBe(false)
+    expect(requestedUris[1]).toBe('/api/v1/workspaces/workspace-1/documents')
+  })
+
   it('multipart 上传携带 Workspace 路径和幂等键', async () => {
     const response = {
       document: {

@@ -128,20 +128,24 @@ async def list_documents(
     q: Annotated[str | None, Query(min_length=1, max_length=240)] = None,
     source_format: Annotated[DocumentFormat | None, Query()] = None,
     status_filter: Annotated[
-        Literal["ACTIVE", "DELETED"] | None, Query(alias="status")
+        Literal["ACTIVE", "DELETED"] | None,
+        Query(alias="status"),
+    ] = None,
+    version_status: Annotated[
+        Literal["PUBLISHING", "PUBLISHED", "SUPERSEDED", "FAILED"] | None,
+        Query(),
     ] = None,
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
 ) -> DocumentList:
-    items, total = await KnowledgeService(
-        session, user.id, workspace_id, settings
-    ).list(
+    items, total = await KnowledgeService(session, user.id, workspace_id, settings).list(
         include_deleted=include_deleted,
         page=page,
         page_size=page_size,
         q=q,
         source_format=source_format,
         status=status_filter,
+        version_status=version_status,
     )
     return DocumentList(
         items=[

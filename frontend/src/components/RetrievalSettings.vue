@@ -106,6 +106,12 @@ defineEmits<{
           >
             父章节与相邻 Chunk 扩展
           </el-checkbox>
+          <el-checkbox
+            :model-value="modelValue.include_query_trace ?? false"
+            @update:model-value="$emit('update:modelValue', { ...modelValue, include_query_trace: $event })"
+          >
+            显示实际检索查询 / 检索诊断
+          </el-checkbox>
         </div>
       </div>
     </el-collapse-item>

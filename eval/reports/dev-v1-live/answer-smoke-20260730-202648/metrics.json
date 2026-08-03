@@ -1,0 +1,34 @@
+{
+  "request_count": 2,
+  "completed_count": 2,
+  "failed_count": 0,
+  "document": {
+    "recall_at_1": 0.5,
+    "recall_at_5": 0.5,
+    "mrr_at_5": 0.5,
+    "ndcg_at_5": 0.5
+  },
+  "source_span": {
+    "recall_at_1": 1.0,
+    "recall_at_5": 1.0,
+    "mrr_at_5": 1.0
+  },
+  "latency_ms": {
+    "retrieval_p50": 291.0003499710001,
+    "retrieval_p95": 409.3845949333627,
+    "total_p50": 1553.2673500711098,
+    "total_p95": 1966.9467250583693,
+    "client_p50": 1563.6083500576206,
+    "client_p95": 1979.0333650831599
+  },
+  "answerability": {
+    "answerable_observations": 1,
+    "unanswerable_observations": 1,
+    "correct_refusal_rate": 1.0,
+    "false_refusal_rate": 0.0,
+    "false_acceptance_rate": 0.0,
+    "gold_citation_support_rate": 1.0,
+    "false_refusal_case_ids": [],
+    "false_acceptance_case_ids": []
+  }
+}

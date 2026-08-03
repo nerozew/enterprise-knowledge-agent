@@ -4,7 +4,7 @@
   "created_at": "2026-07-26",
   "license": "CC0-1.0",
   "synthetic": true,
-  "corpus_snapshot": "sha256:77651df5120a0280b10932a1efd88734482ffa8649555ec9c6bb73e3d2e3a964",
+  "corpus_snapshot": "sha256:df9b04b8b021193d7f69b22266cc36bd12c13af7d03407e71bb7a5b5ec3044f6",
   "cases_snapshot": "sha256:9eb6e7508e29b0168bcc164b88610052e07b6759f8787ab9f7762d68b8707683",
   "corpus_documents": 8,
   "answerable_cases": 20,

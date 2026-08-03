@@ -542,16 +542,17 @@ async def test_milvus_search_builds_mode_and_fusion_specific_requests() -> None:
 
         async def search(self, **kwargs):
             self.search_calls.append(kwargs)
-            return [[{"id": "chunk-1", "distance": 0.9}]]
+            return [[{"distance": 0.9, "entity": {"chunk_id": "chunk-1"}}]]
 
         async def hybrid_search(self, **kwargs):
             self.hybrid_calls.append(kwargs)
-            return [[{"id": "chunk-2", "distance": 0.8}]]
+            return [[{"distance": 0.8, "entity": {"chunk_id": "chunk-2"}}]]
 
     client = FakeMilvusClient()
     store = object.__new__(MilvusVectorStore)
     store._pymilvus = FakeMilvusModule()
     store._client = client
+    store._timeout = 5.0
 
     await store.search(
         "fixture_v1",

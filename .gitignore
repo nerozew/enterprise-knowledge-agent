@@ -33,5 +33,12 @@
 .DS_Store
 Thumbs.db
 
+# 本地人工评测复核进度
+eval/**/review.decisions.json
+
+# Local integration notes and rendered temporary files
+/docs/api_all
+/tmp/
+
 # 当前无根package.json
 /package-lock.json

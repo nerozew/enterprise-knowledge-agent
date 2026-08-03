@@ -1,0 +1,24 @@
+{
+  "request_count": 24,
+  "completed_count": 24,
+  "failed_count": 0,
+  "document": {
+    "recall_at_1": 0.8125,
+    "recall_at_5": 0.8333333333333334,
+    "mrr_at_5": 0.8333333333333334,
+    "ndcg_at_5": 0.8264163013499228
+  },
+  "source_span": {
+    "recall_at_1": 0.975,
+    "recall_at_5": 1.0,
+    "mrr_at_5": 1.0
+  },
+  "latency_ms": {
+    "retrieval_p50": 1074.9536000657827,
+    "retrieval_p95": 1366.5731599729043,
+    "total_p50": 1075.4250999889337,
+    "total_p95": 1367.1995049633551,
+    "client_p50": 1087.0963500346988,
+    "client_p95": 1379.9966500664596
+  }
+}

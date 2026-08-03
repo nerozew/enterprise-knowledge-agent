@@ -121,7 +121,11 @@ async def evaluate(
                 ranked_documents.append(key)
         qrels = {item["document_key"]: float(item["relevance"]) for item in case.get("qrels", [])}
         relevant = set(qrels)
-        evidence = gate.evaluate(case["question"], result.hits)
+        evidence = gate.evaluate(
+            case["question"],
+            result.hits,
+            query_count=len(result.queries),
+        )
         refused = not evidence.accepted
         expected_refusal = bool(case.get("expected_refusal", not case.get("answerable", True)))
         if expected_refusal and refused:
@@ -153,7 +157,12 @@ async def evaluate(
                 "evidence_gate": {
                     "code": evidence.code,
                     "top_score": evidence.top_score,
+                    "gate_score": evidence.gate_score,
+                    "query_count": evidence.query_count,
+                    "score_threshold": evidence.score_threshold,
                     "lexical_coverage": evidence.lexical_coverage,
+                    "lexical_threshold": evidence.lexical_threshold,
+                    "lexical_passed": evidence.lexical_passed,
                     "usable_hit_ids": evidence.usable_hit_ids,
                 },
                 "ranked_document_keys": ranked_documents,

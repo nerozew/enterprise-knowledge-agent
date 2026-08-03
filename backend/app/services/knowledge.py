@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import time
 from collections.abc import Sequence
+from dataclasses import replace
 from datetime import timedelta
 from pathlib import PurePath
 from typing import Any
@@ -28,7 +29,7 @@ from app.knowledge.adapters import (
 )
 from app.knowledge.chunking import ParentChildChunker
 from app.knowledge.errors import KnowledgeError, ProviderUnavailableError
-from app.knowledge.evidence import EvidenceGate, EvidenceGateConfig
+from app.knowledge.evidence import EvidenceDecision, EvidenceGate, EvidenceGateConfig
 from app.knowledge.parsers import DocumentParser, ParserLimits
 from app.knowledge.providers import (
     DisabledEmbeddingProvider,
@@ -36,10 +37,12 @@ from app.knowledge.providers import (
     FixtureEmbeddingProvider,
     FixtureLLMProvider,
     LexicalRerankProvider,
+    LLMJSONProfile,
     OpenAICompatibleEmbeddingProvider,
     OpenAICompatibleLLMProvider,
     OpenAICompatibleRerankProvider,
     ProviderMode,
+    RerankAPIProfile,
     UnconfiguredEmbeddingProvider,
 )
 from app.knowledge.retrieval import (
@@ -50,10 +53,16 @@ from app.knowledge.retrieval import (
 )
 from app.knowledge.types import (
     ChunkKind,
+    FusionScoring,
     IndexedChunk,
     KnowledgeChunk,
     RetrievalResult,
+    RetrievalScoring,
+    ScoreAvailability,
+    ScoreContribution,
+    ScoreDetails,
     ScoredHit,
+    ScoreStage,
 )
 from app.models.base import utc_now
 from app.models.entities import IdempotencyRecord, MemberRole
@@ -175,10 +184,62 @@ async def knowledge_capabilities(settings: Settings) -> dict[str, dict[str, Any]
             }
         except (AppError, KnowledgeError) as exc:
             result[name] = {"configured": False, "healthy": False, "error": str(exc)}
+    mode = ProviderMode(settings.rag_provider_mode)
+    key_ready = mode is ProviderMode.LOCAL
+    embedding_configured = bool(
+        settings.rag_embedding_url
+        and settings.rag_embedding_model
+        and (key_ready or settings.rag_embedding_api_key)
+    )
+    reranker_configured = bool(
+        settings.rag_reranker_url
+        and settings.rag_reranker_model
+        and (key_ready or settings.rag_reranker_api_key)
+    )
+    llm_configured = bool(
+        settings.rag_llm_url
+        and settings.rag_llm_model
+        and (key_ready or settings.rag_llm_api_key)
+    )
+    provider_configured = mode is ProviderMode.FIXTURE or (
+        mode in {ProviderMode.REMOTE, ProviderMode.LOCAL}
+        and (
+            embedding_configured
+            or reranker_configured
+            or llm_configured
+        )
+    )
+    if mode is ProviderMode.FIXTURE:
+        provider_health: bool | None = True
+        provider_checked = True
+        provider_status = "HEALTHY"
+    elif mode in {ProviderMode.REMOTE, ProviderMode.LOCAL} and provider_configured:
+        provider_health = False
+        provider_checked = False
+        provider_status = "UNKNOWN"
+    elif mode is ProviderMode.DISABLED:
+        provider_health = False
+        provider_checked = True
+        provider_status = "DISABLED"
+    else:
+        provider_health = False
+        provider_checked = True
+        provider_status = "UNCONFIGURED"
     result["provider"] = {
-        "configured": settings.rag_provider_mode != "DISABLED",
-        "healthy": settings.rag_provider_mode == "FIXTURE",
+        "configured": provider_configured,
+        "healthy": provider_health,
+        "checked": provider_checked,
+        "status": provider_status,
         "mode": settings.rag_provider_mode,
+        "components": {
+            "embedding": embedding_configured,
+            "reranker": reranker_configured,
+            "llm": llm_configured,
+        },
+        "profiles": {
+            "reranker": settings.rag_reranker_profile,
+            "llm": settings.rag_llm_profile,
+        },
     }
     return result
 
@@ -218,7 +279,11 @@ def _reranker(settings: Settings):
         and settings.rag_reranker_model
         and (mode is ProviderMode.LOCAL or settings.rag_reranker_api_key)
     ):
-        key = f"rerank:{mode}:{settings.rag_reranker_url}:{settings.rag_reranker_model}"
+        key = (
+            f"rerank:{mode}:{settings.rag_reranker_url}:"
+            f"{settings.rag_reranker_model}:{settings.rag_reranker_profile}:"
+            f"{settings.rag_reranker_endpoint}"
+        )
         if key not in _PROVIDERS:
             _PROVIDERS[key] = OpenAICompatibleRerankProvider(
                 base_url=settings.rag_reranker_url,
@@ -226,6 +291,8 @@ def _reranker(settings: Settings):
                 mode=mode,
                 api_key=settings.rag_reranker_api_key,
                 timeout=settings.ai_timeout_seconds,
+                api_profile=RerankAPIProfile(settings.rag_reranker_profile),
+                endpoint=settings.rag_reranker_endpoint,
             )
         return _PROVIDERS[key]
     return None
@@ -240,7 +307,10 @@ def _llm(settings: Settings):
         and settings.rag_llm_model
         and (mode is ProviderMode.LOCAL or settings.rag_llm_api_key)
     ):
-        key = f"llm:{mode}:{settings.rag_llm_url}:{settings.rag_llm_model}"
+        key = (
+            f"llm:{mode}:{settings.rag_llm_url}:{settings.rag_llm_model}:"
+            f"{settings.rag_llm_profile}"
+        )
         if key not in _PROVIDERS:
             _PROVIDERS[key] = OpenAICompatibleLLMProvider(
                 base_url=settings.rag_llm_url,
@@ -248,6 +318,7 @@ def _llm(settings: Settings):
                 mode=mode,
                 api_key=settings.rag_llm_api_key,
                 timeout=settings.ai_timeout_seconds,
+                json_profile=LLMJSONProfile(settings.rag_llm_profile),
             )
         return _PROVIDERS[key]
     return None
@@ -383,8 +454,14 @@ class KnowledgeService:
         q: str | None = None,
         source_format: str | None = None,
         status: str | None = None,
+        version_status: str | None = None,
     ) -> tuple[list[Document], int]:
         _, member = await self.access.require(self.workspace_id)
+        if (
+            member.role == MemberRole.VIEWER.value
+            and version_status not in {None, DocumentVersionStatus.PUBLISHED.value}
+        ):
+            raise AppError("permission_denied", "当前角色无权执行此操作", 403)
         return await self.repo.list_documents(
             self.workspace_id,
             include_deleted=include_deleted,
@@ -394,6 +471,7 @@ class KnowledgeService:
             q=q,
             source_format=source_format,
             status=status,
+            version_status=version_status,
         )
 
     async def get(self, document_id: UUID, *, include_deleted: bool = False) -> Document:
@@ -959,7 +1037,7 @@ class KnowledgeService:
             if event is not None:
                 event.status = "DEAD" if event.attempts >= 5 else "RETRY_WAIT"
                 event.available_at = utc_now() + timedelta(
-                    seconds=min(300, 2 ** event.attempts)
+                    seconds=min(300, 2**event.attempts)
                 )
                 event.lease_owner = None
                 event.lease_expires_at = None
@@ -1309,7 +1387,9 @@ class KnowledgeService:
         vector_store = _vector_store(self.settings)
         fused: dict[str, float] = {}
         raw_scores: dict[str, float] = {}
-        for query in queries:
+        source_observations: dict[str, list[ScoreContribution]] = {}
+        query_contributions: dict[str, list[ScoreContribution]] = {}
+        for query_index, query in enumerate(queries):
             query_vector = await embedding.embed_query(query)
             candidates = await vector_store.search(
                 _profile_hash(embedding.profile),
@@ -1322,16 +1402,48 @@ class KnowledgeService:
                 dense_weight=payload.dense_weight,
                 sparse_weight=1 - payload.dense_weight,
             )
-            for rank, (chunk_id, score) in enumerate(candidates, start=1):
-                fused[chunk_id] = fused.get(chunk_id, 0.0) + 1 / (60 + rank)
-                raw_scores[chunk_id] = max(raw_scores.get(chunk_id, float("-inf")), score)
+            valid_rank = 0
+            seen_query_ids: set[str] = set()
+            for chunk_id, score in candidates:
+                canonical_chunk_id = _canonical_uuid_string(chunk_id)
+                if canonical_chunk_id is None:
+                    continue
+                raw_scores[canonical_chunk_id] = max(
+                    raw_scores.get(canonical_chunk_id, float("-inf")),
+                    score,
+                )
+                if canonical_chunk_id in seen_query_ids:
+                    continue
+                seen_query_ids.add(canonical_chunk_id)
+                valid_rank += 1
+                source_observations.setdefault(canonical_chunk_id, []).append(
+                    ScoreContribution(
+                        query_index=query_index,
+                        value=float(score),
+                        rank=valid_rank,
+                        source=(
+                            "dense_similarity"
+                            if payload.retrieval_mode == "DENSE"
+                            else (
+                                "bm25"
+                                if payload.retrieval_mode == "SPARSE"
+                                else "channel_fusion"
+                            )
+                        ),
+                    )
+                )
+                contribution = 1 / (60 + valid_rank)
+                query_contributions.setdefault(canonical_chunk_id, []).append(
+                    ScoreContribution(
+                        query_index=query_index,
+                        value=contribution,
+                        rank=valid_rank,
+                        source="query_fusion",
+                    )
+                )
+                fused[canonical_chunk_id] = fused.get(canonical_chunk_id, 0.0) + contribution
         ranked_ids = sorted(fused, key=lambda value: (-fused[value], value))
-        valid_ids: list[UUID] = []
-        for value in ranked_ids:
-            try:
-                valid_ids.append(UUID(value))
-            except ValueError:
-                continue
+        valid_ids = [UUID(value) for value in ranked_ids]
         rows = await self.repo.published_chunks_by_ids(
             self.workspace_id, valid_ids
         )
@@ -1372,6 +1484,12 @@ class KnowledgeService:
             filtered_ids.append(chunk_id)
             if len(filtered_ids) >= payload.candidate_k:
                 break
+        query_fusion_scores = dict(fused)
+        query_fusion_ranks = {
+            chunk_id: rank for rank, chunk_id in enumerate(filtered_ids, start=1)
+        }
+        rerank_scores_by_id: dict[str, float] = {}
+        rerank_ranks_by_id: dict[str, int] = {}
         if use_rerank and reranker is not None and filtered_ids:
             rerank_scores = await reranker.rerank(
                 payload.query,
@@ -1381,9 +1499,20 @@ class KnowledgeService:
                 filtered_ids[:30], rerank_scores, strict=True
             ):
                 fused[chunk_id] = 0.4 * fused[chunk_id] + 0.6 * score
+                rerank_scores_by_id[chunk_id] = score
+            rerank_ranks_by_id = {
+                chunk_id: rank
+                for rank, chunk_id in enumerate(
+                    sorted(
+                        rerank_scores_by_id,
+                        key=lambda value: (-rerank_scores_by_id[value], value),
+                    ),
+                    start=1,
+                )
+            }
             filtered_ids.sort(key=lambda value: (-fused[value], value))
         scored_hits: list[ScoredHit] = []
-        for chunk_id in filtered_ids[: payload.top_k]:
+        for final_rank, chunk_id in enumerate(filtered_ids[: payload.top_k], start=1):
             chunk = row_map[chunk_id][0]
             contexts = (
                 await self.repo.context_chunks(
@@ -1402,7 +1531,27 @@ class KnowledgeService:
                     scores={
                         "dense": raw_scores.get(chunk_id, 0.0),
                         "total": fused[chunk_id],
+                        **(
+                            {"rerank": rerank_scores_by_id[chunk_id]}
+                            if chunk_id in rerank_scores_by_id
+                            else {}
+                        ),
                     },
+                    score_details=self._milvus_score_details(
+                        payload=payload,
+                        source_observations=tuple(
+                            source_observations.get(chunk_id, ())
+                        ),
+                        query_contributions=tuple(
+                            query_contributions.get(chunk_id, ())
+                        ),
+                        query_fusion_score=query_fusion_scores[chunk_id],
+                        query_fusion_rank=query_fusion_ranks[chunk_id],
+                        rerank_score=rerank_scores_by_id.get(chunk_id),
+                        rerank_rank=rerank_ranks_by_id.get(chunk_id),
+                        final_score=fused[chunk_id],
+                        final_rank=final_rank,
+                    ),
                     context=tuple(
                         _knowledge_chunk(context) for context in contexts
                     ),
@@ -1428,8 +1577,118 @@ class KnowledgeService:
                 queries=tuple(queries),
                 enabled_components=tuple(enabled),
                 provider_mode=self.settings.rag_provider_mode,
+                scoring=RetrievalScoring(
+                    requested_retrieval_mode=payload.retrieval_mode,
+                    effective_retrieval_mode=payload.retrieval_mode,
+                    query_count=len(queries),
+                    channel_fusion=FusionScoring(
+                        method=payload.fusion if payload.retrieval_mode == "HYBRID" else None,
+                        applied=payload.retrieval_mode == "HYBRID",
+                        rrf_k=(
+                            60
+                            if payload.retrieval_mode == "HYBRID"
+                            and payload.fusion == "RRF"
+                            else None
+                        ),
+                    ),
+                    query_fusion=FusionScoring(
+                        method="RRF",
+                        applied=True,
+                        rrf_k=60,
+                    ),
+                    rerank_applied=bool(rerank_scores_by_id),
+                ),
             ),
             selected_rows,
+        )
+
+    @staticmethod
+    def _milvus_score_details(
+        *,
+        payload: SearchRequest,
+        source_observations: tuple[ScoreContribution, ...],
+        query_contributions: tuple[ScoreContribution, ...],
+        query_fusion_score: float,
+        query_fusion_rank: int,
+        rerank_score: float | None,
+        rerank_rank: int | None,
+        final_score: float,
+        final_rank: int,
+    ) -> ScoreDetails:
+        source_value = max(
+            (observation.value for observation in source_observations),
+            default=None,
+        )
+        source_rank = min(
+            (
+                observation.rank
+                for observation in source_observations
+                if observation.rank is not None
+            ),
+            default=None,
+        )
+        unavailable = ScoreStage(availability=ScoreAvailability.NOT_RUN)
+        not_exposed = ScoreStage(availability=ScoreAvailability.NOT_EXPOSED)
+        not_applicable = ScoreStage(availability=ScoreAvailability.NOT_APPLICABLE)
+        dense = unavailable
+        bm25 = unavailable
+        channel_fusion = not_applicable
+        source_stage = ScoreStage(
+            availability=ScoreAvailability.AVAILABLE,
+            value=source_value,
+            rank=source_rank,
+            method=(
+                "COSINE"
+                if payload.retrieval_mode == "DENSE"
+                else "BM25"
+            ),
+            per_query=source_observations,
+        )
+        if payload.retrieval_mode == "DENSE":
+            dense = source_stage
+        elif payload.retrieval_mode == "SPARSE":
+            bm25 = source_stage
+        else:
+            dense = not_exposed
+            bm25 = not_exposed
+            channel_fusion = ScoreStage(
+                availability=ScoreAvailability.AVAILABLE,
+                value=source_value,
+                rank=source_rank,
+                method=payload.fusion,
+                rrf_k=60 if payload.fusion == "RRF" else None,
+                per_query=source_observations,
+            )
+        rerank = (
+            ScoreStage(
+                availability=ScoreAvailability.AVAILABLE,
+                value=rerank_score,
+                rank=rerank_rank,
+                method="RERANKER",
+            )
+            if rerank_score is not None
+            else unavailable
+        )
+        return ScoreDetails(
+            dense_similarity=dense,
+            bm25=bm25,
+            channel_fusion=channel_fusion,
+            query_fusion=ScoreStage(
+                availability=ScoreAvailability.AVAILABLE,
+                value=query_fusion_score,
+                rank=query_fusion_rank,
+                method="RRF",
+                rrf_k=60,
+                per_query=query_contributions,
+                contributions=query_contributions,
+            ),
+            rerank=rerank,
+            final=ScoreStage(
+                availability=ScoreAvailability.AVAILABLE,
+                value=final_score,
+                rank=final_rank,
+                method="WEIGHTED_SUM" if rerank_score is not None else "IDENTITY",
+            ),
         )
 
     async def search(self, payload: SearchRequest) -> SearchResponse:
@@ -1466,14 +1725,23 @@ class KnowledgeService:
                     use_rewrite=use_rewrite,
                 )
             except ProviderUnavailableError as exc:
-                raise AppError("rag_dependency_unavailable", str(exc), 503) from exc
+                raise AppError(
+                    "model_provider_unavailable",
+                    "The configured model provider is temporarily unavailable",
+                    503,
+                ) from exc
             retrieval_ms = (time.perf_counter() - retrieval_started) * 1000
             evidence = EvidenceGate(
                 EvidenceGateConfig(
                     min_top_score=self.settings.rag_evidence_min_score,
                     min_lexical_coverage=self.settings.rag_evidence_min_lexical_coverage,
                 )
-            ).evaluate(payload.query, result.hits)
+            ).evaluate(
+                payload.query,
+                result.hits,
+                query_count=len(result.queries),
+                enforce_lexical_coverage=payload.response_mode == "HITS",
+            )
             row_by_chunk = {str(row[0].id): row for row in rows}
             milvus_hits = [
                 SearchHit(
@@ -1498,6 +1766,7 @@ class KnowledgeService:
                         "fusion": hit.scores.get("total", hit.score),
                         "rerank": hit.scores.get("rerank"),
                     },
+                    score_details=hit.score_details,
                     context="\n\n".join(item.text for item in hit.context)[:10000],
                 )
                 for hit in result.hits
@@ -1511,26 +1780,53 @@ class KnowledgeService:
                     "message": "当前检索证据不足，已拒绝生成答案",
                 }
             )
+            answerability = _precheck_answerability(
+                evidence,
+                response_mode=payload.response_mode,
+                visible_hit_ids=tuple(str(hit.chunk_id) for hit in milvus_hits),
+            )
             milvus_answer: str | None = None
             if payload.response_mode == "ANSWER" and evidence.accepted:
                 if llm is None:
                     raise AppError(
                         "llm_dependency_unavailable", "答案 LLM 未配置", 503
                     )
-                generated = await llm.answer(
-                    payload.query,
-                    [
-                        EvidenceItem(hit_id=hit.chunk.chunk_id, text=hit.chunk.text)
-                        for hit in result.hits
-                    ],
-                )
+                try:
+                    generated = await llm.answer(
+                        payload.query,
+                        [
+                            EvidenceItem(hit_id=hit.chunk.chunk_id, text=hit.chunk.text)
+                            for hit in result.hits
+                        ],
+                    )
+                    if generated.status not in {"answered", "refused"}:
+                        raise ProviderUnavailableError(
+                            "answer provider returned an invalid status"
+                        )
+                except ProviderUnavailableError as exc:
+                    raise AppError(
+                        "llm_dependency_unavailable",
+                        "The answer model provider is temporarily unavailable",
+                        503,
+                    ) from exc
                 if generated.status == "answered":
                     milvus_answer = generated.text
-                else:
+                    answerability = _model_answerability(
+                        evidence,
+                        answered=True,
+                        supporting_hit_ids=generated.cited_hit_ids,
+                        visible_hit_ids=tuple(str(hit.chunk_id) for hit in milvus_hits),
+                    )
+                elif generated.status == "refused":
                     refusal = {
                         "code": "model_refused",
                         "message": generated.text or "模型判定证据不足",
                     }
+                    answerability = _model_answerability(
+                        evidence,
+                        answered=False,
+                        visible_hit_ids=tuple(str(hit.chunk_id) for hit in milvus_hits),
+                    )
             total_ms = (time.perf_counter() - started) * 1000
             return SearchResponse(
                 query=payload.query,
@@ -1547,6 +1843,9 @@ class KnowledgeService:
                     "llm": llm.profile if llm else "disabled",
                     "profile": embedding.profile,
                 },
+                scoring=result.scoring,
+                query_trace=_query_trace(payload, result.queries),
+                answerability=answerability,
                 components=list(result.enabled_components),
                 timings_ms={
                     "database": 0.0,
@@ -1565,6 +1864,16 @@ class KnowledgeService:
         )
         database_ms = (time.perf_counter() - started) * 1000
         if not rows:
+            empty_evidence = EvidenceGate(
+                EvidenceGateConfig(
+                    min_top_score=self.settings.rag_evidence_min_score,
+                    min_lexical_coverage=self.settings.rag_evidence_min_lexical_coverage,
+                )
+            ).evaluate(
+                payload.query,
+                (),
+                enforce_lexical_coverage=payload.response_mode == "HITS",
+            )
             return SearchResponse(
                 query=payload.query,
                 response_mode=payload.response_mode,
@@ -1577,6 +1886,26 @@ class KnowledgeService:
                     "llm": "disabled",
                     "profile": "none",
                 },
+                scoring=RetrievalScoring(
+                    requested_retrieval_mode=payload.retrieval_mode,
+                    effective_retrieval_mode=payload.retrieval_mode,
+                    query_count=1,
+                    channel_fusion=FusionScoring(
+                        method=None,
+                        applied=False,
+                    ),
+                    query_fusion=FusionScoring(
+                        method=None,
+                        applied=False,
+                    ),
+                    rerank_applied=False,
+                ),
+                query_trace=_query_trace(payload, None),
+                answerability=_precheck_answerability(
+                    empty_evidence,
+                    response_mode=payload.response_mode,
+                    visible_hit_ids=(),
+                ),
                 components=[],
                 timings_ms={"database": database_ms, "retrieval": 0.0, "total": database_ms},
                 warnings=[],
@@ -1602,7 +1931,16 @@ class KnowledgeService:
         if self.settings.rag_provider_mode == "DISABLED":
             vectors = [[0.0] * 128 for _ in knowledge_chunks]
         else:
-            vectors = await embedding.embed_documents([chunk.text for chunk in knowledge_chunks])
+            try:
+                vectors = await embedding.embed_documents(
+                    [chunk.text for chunk in knowledge_chunks]
+                )
+            except ProviderUnavailableError as exc:
+                raise AppError(
+                    "model_provider_unavailable",
+                    "The configured model provider is temporarily unavailable",
+                    503,
+                ) from exc
         indexed = [
             IndexedChunk(
                 chunk=chunk,
@@ -1648,14 +1986,23 @@ class KnowledgeService:
                 ),
             )
         except ProviderUnavailableError as exc:
-            raise AppError("rag_dependency_unavailable", str(exc), 503) from exc
+            raise AppError(
+                "model_provider_unavailable",
+                "The configured model provider is temporarily unavailable",
+                503,
+            ) from exc
         retrieval_ms = (time.perf_counter() - retrieval_started) * 1000
         evidence = EvidenceGate(
             EvidenceGateConfig(
                 min_top_score=self.settings.rag_evidence_min_score,
                 min_lexical_coverage=self.settings.rag_evidence_min_lexical_coverage,
             )
-        ).evaluate(payload.query, result.hits)
+        ).evaluate(
+            payload.query,
+            result.hits,
+            query_count=len(result.queries),
+            enforce_lexical_coverage=payload.response_mode == "HITS",
+        )
         row_by_chunk = {str(row[0].id): row for row in rows}
         hits: list[SearchHit] = []
         for hit in result.hits:
@@ -1666,6 +2013,8 @@ class KnowledgeService:
             # This re-check is intentional: vector candidates are never trusted as facts.
             if document.published_version_id != chunk.document_version_id:
                 continue
+            score_details = hit.score_details
+            assert score_details is not None
             hits.append(
                 SearchHit(
                     chunk_id=chunk.id,
@@ -1683,11 +2032,21 @@ class KnowledgeService:
                         "fusion": hit.scores.get("total", hit.score),
                         "rerank": hit.scores.get("rerank"),
                     },
+                    score_details=replace(
+                        score_details,
+                        final=replace(
+                            score_details.final,
+                            value=hit.score,
+                            rank=len(hits) + 1,
+                        ),
+                    ),
                     context="\n\n".join(item.text for item in hit.context)[:10000],
                 )
             )
         total_ms = (time.perf_counter() - started) * 1000
         warnings = [*base_warnings, *result.warnings]
+        result_scoring = result.scoring
+        assert result_scoring is not None
         answer: str | None = None
         refusal = (
             None
@@ -1696,6 +2055,11 @@ class KnowledgeService:
                 "code": evidence.code,
                 "message": "当前检索证据不足，已拒绝生成答案",
             }
+        )
+        answerability = _precheck_answerability(
+            evidence,
+            response_mode=payload.response_mode,
+            visible_hit_ids=tuple(str(hit.chunk_id) for hit in hits),
         )
         if payload.response_mode == "ANSWER" and evidence.accepted:
             if llm is None or self.settings.rag_provider_mode == "FIXTURE":
@@ -1714,15 +2078,34 @@ class KnowledgeService:
                         if hit.chunk.chunk_id in allowed
                     ],
                 )
+                if generated.status not in {"answered", "refused"}:
+                    raise ProviderUnavailableError(
+                        "answer provider returned an invalid status"
+                    )
             except ProviderUnavailableError as exc:
-                raise AppError("llm_dependency_unavailable", str(exc), 503) from exc
+                raise AppError(
+                    "llm_dependency_unavailable",
+                    "The answer model provider is temporarily unavailable",
+                    503,
+                ) from exc
             if generated.status == "refused":
                 refusal = {
                     "code": "model_refused",
                     "message": generated.text or "模型判定证据不足",
                 }
-            else:
+                answerability = _model_answerability(
+                    evidence,
+                    answered=False,
+                    visible_hit_ids=tuple(str(hit.chunk_id) for hit in hits),
+                )
+            elif generated.status == "answered":
                 answer = generated.text
+                answerability = _model_answerability(
+                    evidence,
+                    answered=True,
+                    supporting_hit_ids=generated.cited_hit_ids,
+                    visible_hit_ids=tuple(str(hit.chunk_id) for hit in hits),
+                )
         return SearchResponse(
             query=payload.query,
             response_mode=payload.response_mode,
@@ -1736,6 +2119,16 @@ class KnowledgeService:
                 "llm": llm.profile if llm else "disabled",
                 "profile": embedding.profile,
             },
+            scoring=RetrievalScoring(
+                requested_retrieval_mode=payload.retrieval_mode,
+                effective_retrieval_mode=effective_mode.value,
+                query_count=len(result.queries),
+                channel_fusion=result_scoring.channel_fusion,
+                query_fusion=result_scoring.query_fusion,
+                rerank_applied=result_scoring.rerank_applied,
+            ),
+            query_trace=_query_trace(payload, result.queries),
+            answerability=answerability,
             components=list(result.enabled_components),
             timings_ms={
                 "database": database_ms,
@@ -1850,6 +2243,130 @@ def _format_from_name(filename: str) -> str:
 
 def _profile_hash(profile: str) -> str:
     return hashlib.sha256(profile.encode()).hexdigest()[:16]
+
+
+def _canonical_uuid_string(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return str(UUID(value))
+    except ValueError:
+        return None
+
+
+def _query_trace(
+    payload: SearchRequest,
+    queries: Sequence[str] | None,
+) -> dict[str, Any]:
+    if not payload.include_query_trace:
+        return {
+            "exposed": False,
+            "items": [],
+            "redaction_reason": "NOT_REQUESTED",
+        }
+    if queries is None:
+        return {
+            "exposed": False,
+            "items": [],
+            "redaction_reason": "RETRIEVAL_NOT_RUN",
+        }
+    return {
+        "exposed": True,
+        "items": [
+            {
+                "index": index,
+                "kind": "ORIGINAL" if index == 0 else "REWRITE",
+                "text": query,
+            }
+            for index, query in enumerate(queries)
+        ],
+        "redaction_reason": None,
+    }
+
+
+def _precheck_answerability(
+    evidence: EvidenceDecision,
+    *,
+    response_mode: str,
+    visible_hit_ids: Sequence[str] | None = None,
+) -> dict[str, Any]:
+    visible = set(visible_hit_ids) if visible_hit_ids is not None else None
+    checked_hit_ids = [
+        item
+        for item in evidence.usable_hit_ids
+        if visible is None or item in visible
+    ]
+    diagnostics = _answerability_diagnostics(evidence)
+    if response_mode == "HITS":
+        return {
+            "status": "NOT_EVALUATED",
+            "method": "NOT_RUN",
+            "reason_code": "HITS_MODE",
+            "precheck_code": evidence.code,
+            "provider_called": False,
+            **diagnostics,
+            "checked_hit_ids": checked_hit_ids,
+            "supporting_hit_ids": [],
+        }
+    if not evidence.accepted:
+        return {
+            "status": "REJECTED",
+            "method": "HEURISTIC_GATE",
+            "reason_code": evidence.code,
+            "precheck_code": evidence.code,
+            "provider_called": False,
+            **diagnostics,
+            "checked_hit_ids": checked_hit_ids,
+            "supporting_hit_ids": [],
+        }
+    return {
+        "status": "NOT_EVALUATED",
+        "method": "NOT_RUN",
+        "reason_code": "AWAITING_GROUNDED_ANSWER",
+        "precheck_code": evidence.code,
+        "provider_called": False,
+        **diagnostics,
+        "checked_hit_ids": checked_hit_ids,
+        "supporting_hit_ids": [],
+    }
+
+
+def _model_answerability(
+    evidence: EvidenceDecision,
+    *,
+    answered: bool,
+    supporting_hit_ids: Sequence[str] = (),
+    visible_hit_ids: Sequence[str] | None = None,
+) -> dict[str, Any]:
+    visible = set(visible_hit_ids) if visible_hit_ids is not None else None
+    checked = tuple(
+        item
+        for item in evidence.usable_hit_ids
+        if visible is None or item in visible
+    )
+    allowed = set(checked)
+    supporting = list(dict.fromkeys(item for item in supporting_hit_ids if item in allowed))
+    return {
+        "status": "SUPPORTED" if answered else "REJECTED",
+        "method": "GROUNDED_ANSWER_LLM",
+        "reason_code": "model_answered" if answered else "model_refused",
+        "precheck_code": evidence.code,
+        "provider_called": True,
+        **_answerability_diagnostics(evidence),
+        "checked_hit_ids": list(checked),
+        "supporting_hit_ids": supporting,
+    }
+
+
+def _answerability_diagnostics(evidence: EvidenceDecision) -> dict[str, Any]:
+    return {
+        "raw_top_score": evidence.top_score,
+        "gate_score": evidence.gate_score,
+        "score_threshold": evidence.score_threshold,
+        "lexical_coverage": evidence.lexical_coverage,
+        "lexical_threshold": evidence.lexical_threshold,
+        "lexical_passed": evidence.lexical_passed,
+    }
 
 
 def _chunk_row(

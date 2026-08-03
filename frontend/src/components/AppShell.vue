@@ -49,6 +49,12 @@ async function handleLogout() {
         <router-link :to="{ name: 'workspace-ask', params: { workspaceId: workspaces.activeWorkspaceId } }">
           问答
         </router-link>
+        <router-link :to="{ name: 'workspace-agent', params: { workspaceId: workspaces.activeWorkspaceId } }">
+          Agent
+        </router-link>
+        <router-link :to="{ name: 'workspace-todos', params: { workspaceId: workspaces.activeWorkspaceId } }">
+          待办
+        </router-link>
       </nav>
       <WorkspaceSwitcher />
       <div class="header-actions">

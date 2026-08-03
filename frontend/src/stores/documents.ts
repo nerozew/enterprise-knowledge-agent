@@ -16,6 +16,13 @@ const terminalStates = new Set(['SUCCEEDED', 'FAILED', 'CANCELLED'])
 const defaultQuery: DocumentQuery = { page: 1, page_size: 12 }
 const activeJobsStoragePrefix = 'knowledge.active-jobs'
 
+function compareVersionsDesc(left: DocumentVersionSummary, right: DocumentVersionSummary): number {
+  const createdAtDifference = Date.parse(right.created_at) - Date.parse(left.created_at)
+  if (Number.isFinite(createdAtDifference) && createdAtDifference !== 0) return createdAtDifference
+  const createdAtTextDifference = right.created_at.localeCompare(left.created_at)
+  return createdAtTextDifference || right.id.localeCompare(left.id)
+}
+
 function activeJobsKey(workspaceId: string): string {
   return `${activeJobsStoragePrefix}.${workspaceId}`
 }
@@ -61,7 +68,22 @@ export const useDocumentStore = defineStore('documents', () => {
     const result: Record<string, DocumentVersionSummary | undefined> = {}
     items.value.forEach((item) => {
       const entries = versions.value[item.id] ?? []
-      result[item.id] = entries.find((entry) => entry.id === item.published_version_id) ?? entries[0]
+      const versionStatus = query.value.version_status
+      if (!versionStatus) {
+        result[item.id] = entries.find((entry) => entry.id === item.published_version_id) ?? entries[0]
+        return
+      }
+      if (versionStatus === 'PUBLISHED') {
+        result[item.id] = entries.find((entry) => entry.id === item.published_version_id)
+        return
+      }
+      const sourceFormat = query.value.source_format
+      result[item.id] = entries
+        .filter((entry) => (
+          entry.status === versionStatus
+          && (!sourceFormat || entry.format === sourceFormat)
+        ))
+        .sort(compareVersionsDesc)[0]
     })
     return result
   })

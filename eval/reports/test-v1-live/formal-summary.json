@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "report_status": "P10_CANDIDATE",
+  "evaluated_at": "2026-07-30",
+  "dataset": {
+    "version": "test-v1",
+    "synthetic": true,
+    "human_reviewed": true,
+    "reviewer_count": 1,
+    "corpus_documents": 8,
+    "answerable_cases": 80,
+    "unanswerable_cases": 20,
+    "cases_sha256": "7fc59af922394adbbd3118aad302b55fa2714fda3b77cd3ea3f5b87f9e816db0",
+    "corpus_sha256": "df9b04b8b021193d7f69b22266cc36bd12c13af7d03407e71bb7a5b5ec3044f6"
+  },
+  "selected_retrieval_configuration": {
+    "retrieval_mode": "HYBRID",
+    "fusion": "WEIGHTED",
+    "dense_weight": 0.65,
+    "top_k": 5,
+    "candidate_k": 50,
+    "rerank": false,
+    "query_rewrite": false
+  },
+  "selected_retrieval_metrics": {
+    "document_recall_at_1": 0.91875,
+    "document_recall_at_5": 1.0,
+    "document_mrr_at_5": 0.98125,
+    "document_ndcg_at_5": 0.9869410738845023,
+    "source_span_recall_at_1": 0.8916666666666666,
+    "source_span_recall_at_5": 1.0,
+    "source_span_mrr_at_5": 0.9666666666666666,
+    "retrieval_latency_p50_ms": 154.2073999880813,
+    "retrieval_latency_p95_ms": 225.6870950281154
+  },
+  "final_answer_run": {
+    "configuration": {
+      "retrieval_mode": "HYBRID",
+      "fusion": "WEIGHTED",
+      "dense_weight": 0.65,
+      "top_k": 5,
+      "candidate_k": 50,
+      "rerank": false,
+      "query_rewrite": false,
+      "context_expansion": true,
+      "response_mode": "ANSWER"
+    },
+    "completed_count": 100,
+    "failed_count": 0,
+    "correct_refusal_rate": 1.0,
+    "false_refusal_rate": 0.025,
+    "false_acceptance_rate": 0.0,
+    "gold_citation_support_rate": 1.0,
+    "false_refusal_case_ids": [
+      "test-026",
+      "test-080"
+    ],
+    "retrieval_latency_p50_ms": 166.8965500430204,
+    "retrieval_latency_p95_ms": 234.74916501436377,
+    "total_latency_p50_ms": 1851.3927499880083,
+    "total_latency_p95_ms": 2707.473565038525
+  },
+  "limitations": [
+    "语料与题目均为合成企业制度数据，不能外推到真实企业全量知识库。",
+    "当前每个消融配置仅运行一次，延迟还需要多次重复和并发压测。",
+    "数据集仅由一名评审者复核，尚未统计评审者间一致性。",
+    "原始运行记录的 Git 工作区为 dirty，正式简历引用前应在干净提交上复跑。",
+    "当前报告未记录完整 Prompt 版本、Token 与调用成本，因此仍是 P10 候选报告。"
+  ]
+}

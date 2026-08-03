@@ -5,8 +5,10 @@ from __future__ import annotations
 import asyncio
 import importlib
 import io
+import json
 import re
 from collections.abc import Mapping, Sequence
+from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol, cast
 
@@ -426,11 +428,21 @@ class MilvusVectorStore:
         kwargs: dict[str, Any] = {"uri": uri, "timeout": timeout}
         if token:
             kwargs["token"] = token
+        self._timeout = timeout
         self._client = pymilvus.AsyncMilvusClient(**kwargs)
+        # AsyncMilvusClient 2.6 has no public query_iterator. Version publication is
+        # off the search hot path, so use the public synchronous iterator in a worker
+        # thread to avoid Milvus' finite query window while keeping the event loop free.
+        self._sync_client_factory = lambda: pymilvus.MilvusClient(**kwargs)
 
     async def ensure_schema(self, profile_hash: str, dimensions: int) -> str:
         name = collection_name(profile_hash)
-        if await self._client.has_collection(collection_name=name):
+        if await self._client.has_collection(collection_name=name, timeout=self._timeout):
+            description = await self._client.describe_collection(
+                collection_name=name, timeout=self._timeout
+            )
+            _validate_milvus_schema(description, self._pymilvus, dimensions, name)
+            await self._validate_milvus_indexes(name)
             return name
         DataType = self._pymilvus.DataType
         schema = self._client.create_schema(auto_id=False, enable_dynamic_field=False)
@@ -474,9 +486,45 @@ class MilvusVectorStore:
             metric_type="BM25",
         )
         await self._client.create_collection(
-            collection_name=name, schema=schema, index_params=index
+            collection_name=name,
+            schema=schema,
+            index_params=index,
+            timeout=self._timeout,
         )
         return name
+
+    async def _validate_milvus_indexes(self, collection: str) -> None:
+        expected = {
+            "dense_vector": ("HNSW", "COSINE"),
+            "sparse_vector": ("SPARSE_INVERTED_INDEX", "BM25"),
+        }
+        for field_name, (index_type, metric_type) in expected.items():
+            index_names = await self._client.list_indexes(
+                collection_name=collection,
+                field_name=field_name,
+                timeout=self._timeout,
+            )
+            descriptions = [
+                await self._client.describe_index(
+                    collection_name=collection,
+                    index_name=index_name,
+                    timeout=self._timeout,
+                )
+                for index_name in index_names
+            ]
+            if not any(
+                _milvus_index_matches(
+                    description,
+                    field_name=field_name,
+                    index_type=index_type,
+                    metric_type=metric_type,
+                )
+                for description in descriptions
+            ):
+                raise AdapterUnavailableError(
+                    f"Milvus collection '{collection}' field '{field_name}' "
+                    f"index mismatch: expected {index_type}/{metric_type}"
+                )
 
     async def upsert(self, profile_hash: str, records: Sequence[VectorRecord]) -> None:
         name = collection_name(profile_hash)
@@ -497,7 +545,9 @@ class MilvusVectorStore:
             for record in records
         ]
         if data:
-            await self._client.upsert(collection_name=name, data=data)
+            await self._client.upsert(
+                collection_name=name, data=data, timeout=self._timeout
+            )
 
     async def search(
         self,
@@ -527,8 +577,9 @@ class MilvusVectorStore:
                 filter=expression,
                 limit=limit,
                 output_fields=["chunk_id"],
+                timeout=self._timeout,
             )
-            return [(str(hit["id"]), float(hit["distance"])) for hit in results[0]]
+            return [_milvus_search_hit(hit) for hit in results[0]]
         if retrieval_mode == "SPARSE":
             results = await self._client.search(
                 collection_name=name,
@@ -538,8 +589,9 @@ class MilvusVectorStore:
                 filter=expression,
                 limit=limit,
                 output_fields=["chunk_id"],
+                timeout=self._timeout,
             )
-            return [(str(hit["id"]), float(hit["distance"])) for hit in results[0]]
+            return [_milvus_search_hit(hit) for hit in results[0]]
         dense_request = self._pymilvus.AnnSearchRequest(
             data=[list(query_vector)],
             anns_field="dense_vector",
@@ -565,8 +617,9 @@ class MilvusVectorStore:
             ranker=ranker,
             limit=limit,
             output_fields=["chunk_id"],
+            timeout=self._timeout,
         )
-        return [(str(hit["id"]), float(hit["distance"])) for hit in results[0]]
+        return [_milvus_search_hit(hit) for hit in results[0]]
 
     async def deactivate_version(
         self, profile_hash: str, workspace_id: str, document_version_id: str
@@ -592,30 +645,123 @@ class MilvusVectorStore:
         workspace = _milvus_literal(workspace_id)
         version = _milvus_literal(document_version_id)
         expression = f'workspace_id == "{workspace}" and document_version_id == "{version}"'
-        rows = await self._client.query(
-            collection_name=name,
-            filter=expression,
-            output_fields=[
-                "chunk_id",
-                "workspace_id",
-                "document_id",
-                "document_version_id",
-                "parent_id",
-                "text",
-                "source_format",
-                "page",
-                "created_at_ms",
-                "dense_vector",
-            ],
+        thread_task = asyncio.create_task(
+            asyncio.to_thread(
+                self._set_version_active_sync,
+                name,
+                expression,
+                workspace_id,
+                document_version_id,
+                active,
+            )
         )
-        for row in rows:
-            row["active"] = active
-        if rows:
-            await self._client.upsert(collection_name=name, data=rows)
+        try:
+            await asyncio.shield(thread_task)
+        except asyncio.CancelledError:
+            # asyncio.to_thread cannot stop a running worker. Keep the coroutine alive
+            # until the bounded Milvus RPCs finish and the client closes, so a cancelled
+            # request cannot leave a late version-state write drifting in the background.
+            while not thread_task.done():
+                try:
+                    await asyncio.shield(thread_task)
+                except asyncio.CancelledError:
+                    continue
+            with suppress(Exception):
+                thread_task.result()
+            raise
+
+    def _set_version_active_sync(
+        self,
+        collection: str,
+        expression: str,
+        workspace_id: str,
+        document_version_id: str,
+        active: bool,
+    ) -> None:
+        client = self._sync_client_factory()
+        output_fields = [
+            "chunk_id",
+            "workspace_id",
+            "document_id",
+            "document_version_id",
+            "parent_id",
+            "text",
+            "source_format",
+            "page",
+            "created_at_ms",
+            "dense_vector",
+        ]
+        expected_ids: set[str] = set()
+        mutated_count = 0
+        try:
+            iterator = client.query_iterator(
+                collection_name=collection,
+                batch_size=1000,
+                limit=-1,
+                filter=expression,
+                output_fields=output_fields,
+                consistency_level="Strong",
+                timeout=self._timeout,
+            )
+            try:
+                while rows := iterator.next():
+                    for row in rows:
+                        chunk_id = _milvus_row_chunk_id(row)
+                        if (
+                            row.get("workspace_id") != workspace_id
+                            or row.get("document_version_id") != document_version_id
+                        ):
+                            raise AdapterUnavailableError(
+                                "Milvus version mutation returned a row outside its "
+                                "workspace/version scope"
+                            )
+                        if chunk_id in expected_ids:
+                            raise AdapterUnavailableError(
+                                f"Milvus version mutation returned duplicate chunk '{chunk_id}'"
+                            )
+                        expected_ids.add(chunk_id)
+                        row["active"] = active
+                    client.upsert(
+                        collection_name=collection,
+                        data=rows,
+                        timeout=self._timeout,
+                    )
+                    mutated_count += len(rows)
+            finally:
+                iterator.close()
+
+            if active and not expected_ids:
+                raise AdapterUnavailableError(
+                    f"Milvus activation found no vectors for workspace '{workspace_id}' "
+                    f"and document version '{document_version_id}'"
+                )
+            if not expected_ids:
+                return
+
+            # Exactly one segment-sealing boundary per version transition. The Strong
+            # iterator above supplies read-after-write for staged rows; this flush makes
+            # the completed active-state transition available to normal bounded searches.
+            client.flush(collection_name=collection, timeout=self._timeout)
+            visible_ids = _milvus_iter_chunk_ids(
+                client,
+                collection_name=collection,
+                expression=f"{expression} and active == {_milvus_bool(active)}",
+                timeout=self._timeout,
+            )
+            if visible_ids != expected_ids or mutated_count != len(expected_ids):
+                missing = len(expected_ids - visible_ids)
+                unexpected = len(visible_ids - expected_ids)
+                raise AdapterUnavailableError(
+                    f"Milvus active-state verification failed for document version "
+                    f"'{document_version_id}': expected {len(expected_ids)}, "
+                    f"found {len(visible_ids)}, missing {missing}, unexpected {unexpected}"
+                )
+        finally:
+            client.close()
 
     async def health(self) -> bool:
         try:
-            await self._client.list_collections()
+            await self._client.list_collections(timeout=self._timeout)
             return True
         except Exception:
             return False
@@ -633,4 +779,242 @@ def collection_name(profile_hash: str) -> str:
 def _milvus_literal(value: str) -> str:
     if not re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", value):
         raise ValueError("identifier is not safe for a typed Milvus filter")
+    return value
+
+
+def _validate_milvus_schema(
+    description: object, pymilvus: object, dimensions: int, collection: str
+) -> None:
+    if not isinstance(description, Mapping):
+        raise AdapterUnavailableError(
+            f"Milvus collection '{collection}' returned an invalid schema description"
+        )
+    fields = description.get("fields")
+    if not isinstance(fields, Sequence) or isinstance(fields, (str, bytes)):
+        raise AdapterUnavailableError(
+            f"Milvus collection '{collection}' schema does not contain fields"
+        )
+    if description.get("auto_id", False) is not False:
+        raise AdapterUnavailableError(
+            f"Milvus collection '{collection}' must disable auto_id"
+        )
+    if description.get("enable_dynamic_field", False) is not False:
+        raise AdapterUnavailableError(
+            f"Milvus collection '{collection}' must disable dynamic fields"
+    )
+    by_name: dict[str, Mapping[Any, Any]] = {}
+    for schema_field in fields:
+        if not isinstance(schema_field, Mapping):
+            continue
+        field_name = schema_field.get("name")
+        if isinstance(field_name, str):
+            by_name[field_name] = schema_field
+    expected_names = {
+        "chunk_id",
+        "workspace_id",
+        "document_id",
+        "document_version_id",
+        "parent_id",
+        "text",
+        "source_format",
+        "page",
+        "created_at_ms",
+        "dense_vector",
+        "sparse_vector",
+        "active",
+    }
+    if set(by_name) != expected_names:
+        missing = sorted(expected_names - set(by_name))
+        unexpected = sorted(set(by_name) - expected_names)
+        raise AdapterUnavailableError(
+            f"Milvus collection '{collection}' field set mismatch: "
+            f"missing {missing}, unexpected {unexpected}"
+        )
+    DataType = cast(Any, getattr(pymilvus, "DataType", None))
+    if DataType is None:
+        raise AdapterUnavailableError(
+            f"Milvus collection '{collection}' cannot be validated without DataType"
+        )
+    field_contract: dict[str, tuple[object, bool, bool, int | None]] = {
+        "chunk_id": (DataType.VARCHAR, False, True, 64),
+        "workspace_id": (DataType.VARCHAR, False, False, 64),
+        "document_id": (DataType.VARCHAR, False, False, 64),
+        "document_version_id": (DataType.VARCHAR, False, False, 64),
+        "parent_id": (DataType.VARCHAR, True, False, 64),
+        "text": (DataType.VARCHAR, False, False, 65535),
+        "source_format": (DataType.VARCHAR, False, False, 16),
+        "page": (DataType.INT64, True, False, None),
+        "created_at_ms": (DataType.INT64, False, False, None),
+        "dense_vector": (DataType.FLOAT_VECTOR, False, False, None),
+        "sparse_vector": (DataType.SPARSE_FLOAT_VECTOR, False, False, None),
+        "active": (DataType.BOOL, False, False, None),
+    }
+    for field_name, (field_type, nullable, primary, max_length) in field_contract.items():
+        field = by_name[field_name]
+        if field.get("type") != field_type:
+            raise AdapterUnavailableError(
+                f"Milvus collection '{collection}' field '{field_name}' type mismatch"
+            )
+        if bool(field.get("nullable", False)) is not nullable:
+            raise AdapterUnavailableError(
+                f"Milvus collection '{collection}' field '{field_name}' nullable mismatch"
+            )
+        if bool(field.get("is_primary", False)) is not primary:
+            raise AdapterUnavailableError(
+                f"Milvus collection '{collection}' field '{field_name}' primary-key mismatch"
+            )
+        if max_length is not None and _milvus_int_param(field, "max_length") != max_length:
+            raise AdapterUnavailableError(
+                f"Milvus collection '{collection}' field '{field_name}' max_length mismatch"
+            )
+    existing_dimensions = _milvus_int_param(by_name["dense_vector"], "dim")
+    if existing_dimensions != dimensions:
+        raise AdapterUnavailableError(
+            f"Milvus collection '{collection}' dense_vector dimension mismatch: "
+            f"configured {dimensions}, existing {existing_dimensions}; "
+            "rebuild the collection for this index profile"
+        )
+    text_params = by_name["text"].get("params")
+    if not isinstance(text_params, Mapping):
+        raise AdapterUnavailableError(
+            f"Milvus collection '{collection}' text analyzer configuration mismatch"
+        )
+    analyzer_params = text_params.get("analyzer_params")
+    if isinstance(analyzer_params, str):
+        try:
+            analyzer_params = json.loads(analyzer_params)
+        except json.JSONDecodeError:
+            analyzer_params = None
+    if (
+        not _milvus_truthy(text_params.get("enable_analyzer"))
+        or not _milvus_truthy(text_params.get("enable_match"))
+        or not isinstance(analyzer_params, Mapping)
+        or analyzer_params.get("tokenizer") != "jieba"
+    ):
+        raise AdapterUnavailableError(
+            f"Milvus collection '{collection}' text analyzer configuration mismatch"
+        )
+    functions = description.get("functions")
+    if not isinstance(functions, Sequence) or isinstance(functions, (str, bytes)):
+        raise AdapterUnavailableError(
+            f"Milvus collection '{collection}' schema has no BM25 function"
+        )
+    FunctionType = cast(Any, getattr(pymilvus, "FunctionType", None))
+    expected_bm25_type = getattr(FunctionType, "BM25", None)
+    valid_bm25 = any(
+        isinstance(function, Mapping)
+        and function.get("name") == "bm25"
+        and function.get("type") == expected_bm25_type
+        and list(function.get("input_field_names", [])) == ["text"]
+        and list(function.get("output_field_names", [])) == ["sparse_vector"]
+        for function in functions
+    )
+    if not valid_bm25:
+        raise AdapterUnavailableError(
+            f"Milvus collection '{collection}' BM25 function mismatch"
+        )
+
+
+def _milvus_int_param(field: Mapping[Any, Any], parameter: str) -> int:
+    params = field.get("params")
+    value = params.get(parameter) if isinstance(params, Mapping) else None
+    try:
+        parsed = int(cast(Any, value))
+    except (TypeError, ValueError) as exc:
+        raise AdapterUnavailableError(
+            f"Milvus field '{field.get('name')}' has no valid {parameter}"
+        ) from exc
+    if parsed <= 0:
+        raise AdapterUnavailableError(
+            f"Milvus field '{field.get('name')}' has no valid {parameter}"
+        )
+    return parsed
+
+
+def _milvus_iter_chunk_ids(
+    client: object, *, collection_name: str, expression: str, timeout: float
+) -> set[str]:
+    iterator = cast(Any, client).query_iterator(
+        collection_name=collection_name,
+        batch_size=1000,
+        limit=-1,
+        filter=expression,
+        output_fields=["chunk_id"],
+        consistency_level="Strong",
+        timeout=timeout,
+    )
+    chunk_ids: set[str] = set()
+    try:
+        while rows := iterator.next():
+            for row in rows:
+                chunk_id = _milvus_row_chunk_id(row)
+                if chunk_id in chunk_ids:
+                    raise AdapterUnavailableError(
+                        f"Milvus verification returned duplicate chunk '{chunk_id}'"
+                    )
+                chunk_ids.add(chunk_id)
+    finally:
+        iterator.close()
+    return chunk_ids
+
+
+def _milvus_bool(value: bool) -> str:
+    return "true" if value else "false"
+
+
+def _milvus_truthy(value: object) -> bool:
+    return value is True or (isinstance(value, str) and value.casefold() == "true")
+
+
+def _milvus_index_matches(
+    description: object,
+    *,
+    field_name: str,
+    index_type: str,
+    metric_type: str,
+) -> bool:
+    if not isinstance(description, Mapping):
+        return False
+    params = description.get("params")
+    nested = params if isinstance(params, Mapping) else {}
+    actual_index_type = description.get("index_type", nested.get("index_type"))
+    actual_metric_type = description.get("metric_type", nested.get("metric_type"))
+    return (
+        description.get("field_name") == field_name
+        and actual_index_type == index_type
+        and actual_metric_type == metric_type
+    )
+
+
+def _milvus_search_hit(hit: object) -> tuple[str, float]:
+    if not isinstance(hit, Mapping):
+        raise AdapterUnavailableError("Milvus search returned an invalid hit")
+    chunk_id = _milvus_mapping_value(hit, "chunk_id")
+    distance = _milvus_mapping_value(hit, "distance")
+    if not isinstance(chunk_id, str) or not chunk_id:
+        raise AdapterUnavailableError(
+            "Milvus search hit field 'chunk_id' must be a non-empty string"
+        )
+    if isinstance(distance, bool) or not isinstance(distance, (int, float)):
+        raise AdapterUnavailableError("Milvus search hit field 'distance' must be numeric")
+    return chunk_id, float(distance)
+
+
+def _milvus_mapping_value(hit: Mapping[Any, Any], field: str) -> object:
+    if field in hit:
+        return hit[field]
+    entity = hit.get("entity")
+    if isinstance(entity, Mapping) and field in entity:
+        return entity[field]
+    raise AdapterUnavailableError(f"Milvus search hit is missing required field '{field}'")
+
+
+def _milvus_row_chunk_id(row: object) -> str:
+    if not isinstance(row, Mapping):
+        raise AdapterUnavailableError("Milvus query returned an invalid row")
+    value = row.get("chunk_id")
+    if not isinstance(value, str) or not value:
+        raise AdapterUnavailableError(
+            "Milvus query row field 'chunk_id' must be a non-empty string"
+        )
     return value

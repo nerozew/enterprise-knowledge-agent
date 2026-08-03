@@ -6,7 +6,13 @@ import AppShell from '@/components/AppShell.vue'
 import DocumentUploadPanel from '@/components/DocumentUploadPanel.vue'
 import DocumentCard from '@/components/DocumentCard.vue'
 import { mapApiError } from '@/api/client'
-import type { DocumentFormat, DocumentQuery, DocumentUploadInput, IngestionJobSummary } from '@/api/types'
+import type {
+  DocumentFormat,
+  DocumentQuery,
+  DocumentUploadInput,
+  DocumentVersionStatus,
+  IngestionJobSummary,
+} from '@/api/types'
 import { useDocumentStore } from '@/stores/documents'
 import { useWorkspaceStore } from '@/stores/workspaces'
 
@@ -16,7 +22,7 @@ const route = useRoute()
 const uploadPanel = ref<InstanceType<typeof DocumentUploadPanel>>()
 const q = ref('')
 const sourceFormat = ref<DocumentFormat | ''>('')
-const status = ref('')
+const versionStatus = ref<DocumentVersionStatus | ''>('')
 const readonly = computed(() => !workspaces.canWrite)
 const selectedDocumentId = computed(() => typeof route.query.document === 'string' ? route.query.document : '')
 const page = computed(() => documents.query.page ?? 1)
@@ -27,11 +33,29 @@ watch(
   async (workspaceId) => {
     q.value = ''
     sourceFormat.value = ''
-    status.value = ''
-    if (workspaceId) await documents.load()
+    versionStatus.value = ''
+    if (workspaceId) {
+      await documents.load({
+        q: undefined,
+        source_format: undefined,
+        version_status: readonly.value ? 'PUBLISHED' : undefined,
+        page: 1,
+      })
+    }
   },
   { immediate: true },
 )
+
+watch(readonly, (isReadonly, wasReadonly) => {
+  if (isReadonly === wasReadonly || !workspaces.activeWorkspaceId) return
+  versionStatus.value = ''
+  void documents.load({
+    q: q.value.trim() || undefined,
+    source_format: sourceFormat.value || undefined,
+    version_status: isReadonly ? 'PUBLISHED' : undefined,
+    page: 1,
+  })
+})
 
 watch(selectedDocumentId, async (documentId) => {
   if (!documentId) return
@@ -55,10 +79,10 @@ async function upload(input: DocumentUploadInput) {
 
 function applyFilters() {
   const patch: DocumentQuery = {
+    q: q.value.trim() || undefined,
+    source_format: sourceFormat.value || undefined,
+    version_status: readonly.value ? 'PUBLISHED' : versionStatus.value || undefined,
     page: 1,
-    ...(q.value.trim() ? { q: q.value.trim() } : {}),
-    ...(sourceFormat.value ? { source_format: sourceFormat.value } : {}),
-    ...(status.value ? { status: status.value as NonNullable<DocumentQuery['status']> } : {}),
   }
   void documents.load(patch)
 }
@@ -120,7 +144,13 @@ async function cancel(job: IngestionJobSummary) {
         <el-select v-model="sourceFormat" clearable placeholder="全部格式" aria-label="按格式筛选">
           <el-option v-for="format in ['PDF', 'DOCX', 'MARKDOWN', 'TXT']" :key="format" :label="format" :value="format" />
         </el-select>
-        <el-select v-model="status" clearable placeholder="全部状态" aria-label="按状态筛选">
+        <el-select
+          v-if="!readonly"
+          v-model="versionStatus"
+          clearable
+          placeholder="全部状态"
+          aria-label="按状态筛选"
+        >
           <el-option label="已发布" value="PUBLISHED" />
           <el-option label="处理中" value="PUBLISHING" />
           <el-option label="失败" value="FAILED" />
@@ -151,7 +181,7 @@ async function cancel(job: IngestionJobSummary) {
       </div>
       <el-empty
         v-else-if="!documents.errorMessage"
-        :description="q || sourceFormat || status ? '没有匹配的文档' : readonly ? '这个空间还没有已发布文档' : '上传第一份文档，开始构建企业知识库'"
+        :description="q || sourceFormat || versionStatus ? '没有匹配的文档' : readonly ? '这个空间还没有已发布文档' : '上传第一份文档，开始构建企业知识库'"
       />
       <el-pagination
         v-if="documents.total > pageSize"

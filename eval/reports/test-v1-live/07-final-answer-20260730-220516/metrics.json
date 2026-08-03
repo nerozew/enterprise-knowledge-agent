@@ -1,0 +1,44 @@
+{
+  "schema_version": 2,
+  "request_count": 100,
+  "completed_count": 100,
+  "failed_count": 0,
+  "observations": {
+    "answerable": 80,
+    "unanswerable": 20,
+    "retrieval_metrics_population": "ANSWERABLE_ONLY",
+    "latency_metrics_population": "ALL_COMPLETED"
+  },
+  "document": {
+    "recall_at_1": 0.91875,
+    "recall_at_5": 1.0,
+    "mrr_at_5": 0.98125,
+    "ndcg_at_5": 0.9869410738845023
+  },
+  "source_span": {
+    "recall_at_1": 0.8916666666666666,
+    "recall_at_5": 1.0,
+    "mrr_at_5": 0.9666666666666666
+  },
+  "latency_ms": {
+    "retrieval_p50": 166.8965500430204,
+    "retrieval_p95": 234.74916501436377,
+    "total_p50": 1851.3927499880083,
+    "total_p95": 2707.473565038525,
+    "client_p50": 1862.3380500357598,
+    "client_p95": 2720.496484963222
+  },
+  "answerability": {
+    "answerable_observations": 80,
+    "unanswerable_observations": 20,
+    "correct_refusal_rate": 1.0,
+    "false_refusal_rate": 0.025,
+    "false_acceptance_rate": 0.0,
+    "gold_citation_support_rate": 1.0,
+    "false_refusal_case_ids": [
+      "test-026",
+      "test-080"
+    ],
+    "false_acceptance_case_ids": []
+  }
+}

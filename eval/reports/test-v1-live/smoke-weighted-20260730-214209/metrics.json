@@ -1,0 +1,31 @@
+{
+  "schema_version": 2,
+  "request_count": 1,
+  "completed_count": 1,
+  "failed_count": 0,
+  "observations": {
+    "answerable": 1,
+    "unanswerable": 0,
+    "retrieval_metrics_population": "ANSWERABLE_ONLY",
+    "latency_metrics_population": "ALL_COMPLETED"
+  },
+  "document": {
+    "recall_at_1": 1.0,
+    "recall_at_5": 1.0,
+    "mrr_at_5": 1.0,
+    "ndcg_at_5": 1.0
+  },
+  "source_span": {
+    "recall_at_1": 1.0,
+    "recall_at_5": 1.0,
+    "mrr_at_5": 1.0
+  },
+  "latency_ms": {
+    "retrieval_p50": 361.7144998861477,
+    "retrieval_p95": 361.7144998861477,
+    "total_p50": 362.6055000349879,
+    "total_p95": 362.6055000349879,
+    "client_p50": 374.3080999702215,
+    "client_p95": 374.3080999702215
+  }
+}

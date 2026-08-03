@@ -54,7 +54,7 @@ def test_p2_p4_sqlite_empty_database_upgrade_and_downgrade(tmp_path):
         revision = connection.execute(
             "SELECT version_num FROM alembic_version"
         ).fetchone()
-        assert revision == ("0007_p2_p4_integrity_and_leases",)
+        assert revision == ("0010_p8_checkpoint_binding",)
         for table_name in (
             "documents",
             "document_versions",
@@ -63,11 +63,30 @@ def test_p2_p4_sqlite_empty_database_upgrade_and_downgrade(tmp_path):
             "document_chunks",
             "outbox_events",
             "compensation_tasks",
+            "conversations",
+            "messages",
+            "agent_runs",
+            "agent_run_events",
+            "approval_requests",
+            "todos",
+            "agent_citations",
+            "agent_checkpoints",
+            "agent_checkpoint_writes",
         ):
             assert connection.execute(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?",
                 (table_name,),
             ).fetchone() == (1,)
+        conversation_ddl = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='conversations'"
+        ).fetchone()[0]
+        approval_ddl = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='approval_requests'"
+        ).fetchone()[0]
+        assert "ck_conversations_conversation_status" in conversation_ddl
+        assert "ck_approval_requests_approval_request_status" in approval_ddl
+        assert "ck_conversations_ck_" not in conversation_ddl
+        assert "ck_approval_requests_ck_" not in approval_ddl
     _run_alembic(url, "downgrade", "base")
     with sqlite3.connect(database) as connection:
         domain_tables = connection.execute(
@@ -222,7 +241,7 @@ def test_p1_database_upgrades_forward_to_p2_p4_without_losing_records(tmp_path):
         revision = connection.execute(
             "SELECT version_num FROM alembic_version"
         ).fetchone()
-        assert revision == ("0007_p2_p4_integrity_and_leases",)
+        assert revision == ("0010_p8_checkpoint_binding",)
         columns = {
             row[1] for row in connection.execute("PRAGMA table_info(idempotency_records)")
         }

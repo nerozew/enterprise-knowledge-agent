@@ -155,6 +155,48 @@ async def test_failed_new_version_keeps_old_published_pointer(client: AsyncClien
     assert current.json()["published_version_id"] == first["version"]["id"]
 
 
+async def test_document_list_failed_filter_uses_latest_version(client: AsyncClient):
+    token, _ = await register(client, "version-filter-owner@example.com")
+    workspace_id = (await _workspace(client, token))["id"]
+    failed = await _upload(
+        client,
+        token,
+        workspace_id,
+        content=b"\x00broken",
+        filename="recovered.md",
+        key="version-filter-failed",
+    )
+    published = await _upload(
+        client,
+        token,
+        workspace_id,
+        content=b"# Recovered\n\nPublished content.",
+        filename="recovered.md",
+        key="version-filter-published",
+        document_id=failed["document"]["id"],
+    )
+
+    historical_failed = await client.get(
+        f"/api/v1/workspaces/{workspace_id}/documents",
+        params={"version_status": "FAILED"},
+        headers=auth_headers(token),
+    )
+    current_published = await client.get(
+        f"/api/v1/workspaces/{workspace_id}/documents",
+        params={"source_format": "MARKDOWN", "version_status": "PUBLISHED"},
+        headers=auth_headers(token),
+    )
+
+    assert failed["version"]["status"] == "FAILED"
+    assert published["version"]["status"] == "PUBLISHED"
+    assert historical_failed.status_code == 200
+    assert historical_failed.json()["items"] == []
+    assert current_published.status_code == 200
+    assert [item["id"] for item in current_published.json()["items"]] == [
+        failed["document"]["id"]
+    ]
+
+
 async def test_cross_workspace_document_and_job_are_hidden(client: AsyncClient):
     owner_token, _ = await register(client, "tenant-one@example.com")
     other_token, _ = await register(client, "tenant-two@example.com")
@@ -175,8 +217,21 @@ async def test_cross_workspace_document_and_job_are_hidden(client: AsyncClient):
         f"/api/v1/workspaces/{other_workspace}/ingestion-jobs/{uploaded['job']['id']}",
         headers=auth_headers(other_token),
     )
+    forbidden_list = await client.get(
+        f"/api/v1/workspaces/{owner_workspace}/documents",
+        params={"source_format": "MARKDOWN", "version_status": "PUBLISHED"},
+        headers=auth_headers(other_token),
+    )
+    isolated_list = await client.get(
+        f"/api/v1/workspaces/{other_workspace}/documents",
+        params={"source_format": "MARKDOWN", "version_status": "PUBLISHED"},
+        headers=auth_headers(other_token),
+    )
     assert document.status_code == 404
     assert job.status_code == 404
+    assert forbidden_list.status_code == 404
+    assert isolated_list.status_code == 200
+    assert isolated_list.json()["items"] == []
 
     search = await client.post(
         f"/api/v1/workspaces/{other_workspace}/search",
@@ -209,13 +264,14 @@ async def test_viewer_cannot_read_ingestion_jobs_or_unpublished_documents(
         content="# 已发布制度\n\n仅已发布内容可见。".encode(),
         key="knowledge-rbac-published",
     )
-    await _upload(
+    failed = await _upload(
         client,
         owner_token,
         team["id"],
         content=b"\x00broken",
         filename="failed.md",
         key="knowledge-rbac-failed",
+        document_id=published["document"]["id"],
     )
 
     visible = await client.get(
@@ -227,12 +283,29 @@ async def test_viewer_cannot_read_ingestion_jobs_or_unpublished_documents(
         f"/api/v1/workspaces/{team['id']}/ingestion-jobs/{published['job']['id']}",
         headers=auth_headers(viewer_token),
     )
+    failed_filter = await client.get(
+        f"/api/v1/workspaces/{team['id']}/documents",
+        params={"version_status": "FAILED"},
+        headers=auth_headers(viewer_token),
+    )
+    published_filter = await client.get(
+        f"/api/v1/workspaces/{team['id']}/documents",
+        params={"version_status": "PUBLISHED"},
+        headers=auth_headers(viewer_token),
+    )
+    assert failed["version"]["status"] == "FAILED"
     assert visible.status_code == 200
     assert [item["id"] for item in visible.json()["items"]] == [
         published["document"]["id"]
     ]
     assert job.status_code == 403
     assert job.json()["error"]["code"] == "permission_denied"
+    assert failed_filter.status_code == 403
+    assert failed_filter.json()["error"]["code"] == "permission_denied"
+    assert published_filter.status_code == 200
+    assert [item["id"] for item in published_filter.json()["items"]] == [
+        published["document"]["id"]
+    ]
 
 
 async def test_document_list_combines_title_format_and_status_filters(
@@ -277,13 +350,28 @@ async def test_document_list_combines_title_format_and_status_filters(
         params={"q": "安全", "source_format": "MARKDOWN", "status": "ACTIVE"},
         headers=auth_headers(token),
     )
+    markdown_published = await client.get(
+        f"/api/v1/workspaces/{workspace_id}/documents",
+        params={"source_format": "MARKDOWN", "version_status": "PUBLISHED"},
+        headers=auth_headers(token),
+    )
+    invalid_version_status = await client.get(
+        f"/api/v1/workspaces/{workspace_id}/documents",
+        params={"version_status": "READY"},
+        headers=auth_headers(token),
+    )
     assert active.status_code == mismatch.status_code == 200
+    assert markdown_published.status_code == 200
+    assert invalid_version_status.status_code == 422
     assert q_only.json()["total"] == 1, q_only.text
     assert format_only.json()["total"] == 1, format_only.text
     assert [item["id"] for item in active.json()["items"]] == [
         text["document"]["id"]
     ]
     assert mismatch.json()["total"] == 0
+    assert [item["id"] for item in markdown_published.json()["items"]] == [
+        markdown["document"]["id"]
+    ]
 
     deleted = await client.delete(
         f"/api/v1/workspaces/{workspace_id}/documents/{markdown['document']['id']}",

@@ -1,3 +1,15 @@
+from app.models.agent import (
+    AgentCheckpoint,
+    AgentCheckpointWrite,
+    AgentCitation,
+    AgentMessageRecord,
+    AgentRun,
+    AgentRunDispatch,
+    AgentRunEvent,
+    ApprovalRequest,
+    Conversation,
+    Todo,
+)
 from app.models.entities import AiGeneration, Inspiration, InspirationTag, Tag, User
 from app.models.knowledge import (
     CompensationTask,
@@ -10,8 +22,17 @@ from app.models.knowledge import (
 )
 
 __all__ = [
+    "AgentCheckpoint",
+    "AgentCheckpointWrite",
+    "AgentCitation",
+    "AgentMessageRecord",
+    "AgentRun",
+    "AgentRunDispatch",
+    "AgentRunEvent",
     "AiGeneration",
+    "ApprovalRequest",
     "CompensationTask",
+    "Conversation",
     "Document",
     "DocumentChunk",
     "DocumentVersion",
@@ -21,5 +42,6 @@ __all__ = [
     "InspirationTag",
     "OutboxEvent",
     "Tag",
+    "Todo",
     "User",
 ]

@@ -90,6 +90,48 @@ class ScoreBreakdown(APIModel):
     rerank: float | None = None
 
 
+ScoreAvailability = Literal[
+    "AVAILABLE",
+    "NOT_APPLICABLE",
+    "NOT_EXPOSED",
+    "NOT_RUN",
+]
+
+
+class ScoreContribution(APIModel):
+    query_index: int = Field(ge=0)
+    value: float
+    rank: int | None = Field(default=None, ge=1)
+    source: str | None = None
+
+
+class ScoreStage(APIModel):
+    availability: ScoreAvailability
+    value: float | None = None
+    rank: int | None = Field(default=None, ge=1)
+    method: str | None = None
+    rrf_k: int | None = Field(default=None, ge=1)
+    per_query: list[ScoreContribution] = Field(default_factory=list)
+    contributions: list[ScoreContribution] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def availability_matches_value(self) -> ScoreStage:
+        if self.availability == "AVAILABLE" and self.value is None:
+            raise ValueError("available score stages require a value")
+        if self.availability != "AVAILABLE" and self.value is not None:
+            raise ValueError("unavailable score stages cannot expose a value")
+        return self
+
+
+class ScoreDetails(APIModel):
+    dense_similarity: ScoreStage
+    bm25: ScoreStage
+    channel_fusion: ScoreStage
+    query_fusion: ScoreStage
+    rerank: ScoreStage
+    final: ScoreStage
+
+
 class SearchHit(APIModel):
     chunk_id: UUID
     document_id: UUID
@@ -101,6 +143,7 @@ class SearchHit(APIModel):
     source_span_id: str
     score: float
     scores: ScoreBreakdown
+    score_details: ScoreDetails
     context: str
 
 
@@ -137,6 +180,7 @@ class SearchRequest(APIModel):
     expand_context: bool = True
     response_mode: Literal["HITS", "ANSWER"] = "HITS"
     dense_weight: float = Field(default=0.65, ge=0, le=1)
+    include_query_trace: bool = False
     filters: SearchFilters = Field(default_factory=SearchFilters)
 
     @model_validator(mode="after")
@@ -159,6 +203,50 @@ class Refusal(APIModel):
     message: str
 
 
+class FusionScoring(APIModel):
+    method: str | None = None
+    applied: bool
+    rrf_k: int | None = Field(default=None, ge=1)
+
+
+class SearchScoring(APIModel):
+    version: Literal[1] = 1
+    requested_retrieval_mode: RetrievalMode
+    effective_retrieval_mode: RetrievalMode
+    query_count: int = Field(ge=1)
+    channel_fusion: FusionScoring
+    query_fusion: FusionScoring
+    rerank_applied: bool
+
+
+class QueryTraceItem(APIModel):
+    index: int = Field(ge=0)
+    kind: Literal["ORIGINAL", "REWRITE"]
+    text: str
+
+
+class QueryTrace(APIModel):
+    exposed: bool
+    items: list[QueryTraceItem] = Field(default_factory=list)
+    redaction_reason: str | None = None
+
+
+class Answerability(APIModel):
+    status: Literal["SUPPORTED", "REJECTED", "NOT_EVALUATED"]
+    method: Literal["GROUNDED_ANSWER_LLM", "HEURISTIC_GATE", "NOT_RUN"]
+    reason_code: str
+    precheck_code: str
+    provider_called: bool
+    raw_top_score: float
+    gate_score: float
+    score_threshold: float = Field(ge=0)
+    lexical_coverage: float = Field(ge=0, le=1)
+    lexical_threshold: float = Field(ge=0, le=1)
+    lexical_passed: bool
+    checked_hit_ids: list[UUID] = Field(default_factory=list)
+    supporting_hit_ids: list[UUID] = Field(default_factory=list)
+
+
 class SearchResponse(APIModel):
     query: str
     response_mode: Literal["HITS", "ANSWER"]
@@ -166,6 +254,9 @@ class SearchResponse(APIModel):
     refusal: Refusal | None = None
     hits: list[SearchHit]
     provider: ProviderMetadata
+    scoring: SearchScoring
+    query_trace: QueryTrace
+    answerability: Answerability
     components: list[str]
     timings_ms: dict[str, float]
     warnings: list[str]
