@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import { ApiError } from './client'
-import { parseAgentEvent, parseAgentRunSnapshot } from './agentValidation'
+import {
+  parseAgentEvent,
+  parseAgentRunSnapshot,
+  parseApprovalDecisionResult,
+} from './agentValidation'
 
 function run(status = 'WAITING_APPROVAL') {
   return {
@@ -92,5 +96,23 @@ describe('Agent wire schema 校验', () => {
       payload: { route: 'KNOWLEDGE_QA' },
       created_at: '2026-08-03T00:00:07Z',
     })
+  })
+
+  it('批准响应必须同时包含 COMPLETED Run 与服务端 Todo 事实', () => {
+    expect(() => parseApprovalDecisionResult({
+      approval_id: 'approval-1',
+      status: 'APPROVED',
+      decided_at: '2026-08-03T00:00:02Z',
+      run: { ...run('COMPLETED'), finished_at: '2026-08-03T00:00:02Z' },
+      todo_id: null,
+    })).toThrow(ApiError)
+
+    expect(parseApprovalDecisionResult({
+      approval_id: 'approval-1',
+      status: 'APPROVED',
+      decided_at: '2026-08-03T00:00:02Z',
+      run: { ...run('COMPLETED'), finished_at: '2026-08-03T00:00:02Z' },
+      todo_id: 'todo-1',
+    }).todo_id).toBe('todo-1')
   })
 })

@@ -706,9 +706,40 @@ async def test_0009_legacy_pending_upgrade_resumes_exact_run_not_latest_other_ru
             .where(AgentCheckpoint.checkpoint_ns.in_(namespaces))
             .values(checkpoint_ns=TODO_CHECKPOINT_NAMESPACE)
         )
+        # 0011 intentionally fences downgrades while recovery facts are active.
+        # Quiesce them only long enough to remove the dispatch migration, then
+        # restore the legacy pending facts before exercising the 0010 backfill.
+        await session.execute(
+            update(ApprovalRequest)
+            .where(ApprovalRequest.workspace_id == workspace_id)
+            .values(status=ApprovalStatus.REJECTED.value)
+        )
+        await session.execute(
+            update(AgentRun)
+            .where(AgentRun.workspace_id == workspace_id)
+            .values(status=AgentRunStatus.FAILED.value)
+        )
         await session.commit()
     await engine.dispose()
 
+    run_alembic(database_url, "downgrade", "0010_p8_checkpoint_binding")
+    legacy_engine = create_async_engine(database_url)
+    legacy_factory = async_sessionmaker(
+        legacy_engine, class_=AsyncSession, expire_on_commit=False
+    )
+    async with legacy_factory() as session:
+        await session.execute(
+            update(ApprovalRequest)
+            .where(ApprovalRequest.workspace_id == workspace_id)
+            .values(status=ApprovalStatus.PENDING.value)
+        )
+        await session.execute(
+            update(AgentRun)
+            .where(AgentRun.workspace_id == workspace_id)
+            .values(status=AgentRunStatus.WAITING_APPROVAL.value)
+        )
+        await session.commit()
+    await legacy_engine.dispose()
     run_alembic(database_url, "downgrade", "0009_p8_agent_checkpoints")
     run_alembic(database_url, "upgrade", "head")
     resumed_engine = create_async_engine(database_url)

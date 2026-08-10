@@ -64,6 +64,79 @@ class TodoApprovalService:
             raise AppError("approval_parameters_tampered", "待审批参数哈希不匹配", 409)
         return arguments, calculated_hash
 
+    async def prepare_approval(
+        self,
+        *,
+        run_id: UUID,
+        proposal: ToolProposal,
+        expires_at: datetime,
+        dispatch_id: UUID | None = None,
+        claim_token: str | None = None,
+    ) -> ApprovalRequest:
+        """Persist an internal draft without publishing it to REST or SSE."""
+
+        if (dispatch_id is None) != (claim_token is None):
+            raise ValueError("dispatch_id and claim_token must be provided together")
+        now = _aware_utc(self.clock())
+        if expires_at.tzinfo is None:
+            raise AppError("invalid_approval_expiry", "审批有效期必须是未来的带时区时间", 422)
+        try:
+            await self.access.require(self.workspace_id, minimum_role=MemberRole.EDITOR)
+            if dispatch_id is not None and claim_token is not None:
+                if not await self.repo.owns_dispatch_lease(
+                    self.workspace_id,
+                    dispatch_id,
+                    claim_token=claim_token,
+                    for_update=True,
+                ):
+                    raise AppError("dispatch_lease_lost", "Dispatch 租约已失效", 409)
+            arguments, calculated_hash = self._validated_proposal(proposal)
+            run = await self.repo.get_run(self.workspace_id, run_id, for_update=True)
+            if run is None or run.requested_by_user_id != self.actor_id:
+                raise AppError("resource_not_found", "资源不存在", 404)
+            existing = await self.repo.get_approval_by_call(
+                self.workspace_id, run_id, proposal.tool_call_id
+            )
+            if existing is not None:
+                if (
+                    existing.requested_by_user_id != self.actor_id
+                    or existing.arguments_hash != calculated_hash
+                    or canonical_request_hash(existing.arguments_json) != calculated_hash
+                ):
+                    raise AppError("approval_parameters_tampered", "审批参数不一致", 409)
+                await self.session.commit()
+                return existing
+            if _aware_utc(expires_at) <= now:
+                raise AppError("invalid_approval_expiry", "审批有效期必须是未来的带时区时间", 422)
+            if run.route != "TODO_CREATE" or run.status != AgentRunStatus.RUNNING.value:
+                raise AppError("invalid_run_state", "当前运行不能准备审批", 409)
+            approval = ApprovalRequest(
+                workspace_id=self.workspace_id,
+                run_id=run_id,
+                tool_call_id=proposal.tool_call_id,
+                requested_by_user_id=self.actor_id,
+                tool_name=proposal.tool_name,
+                arguments_json=arguments.model_dump(mode="json"),
+                arguments_hash=calculated_hash,
+                status=ApprovalStatus.PENDING.value,
+                version=1,
+                expires_at=_aware_utc(expires_at),
+            )
+            self.repo.add_approval(approval)
+            await self.session.commit()
+        except IntegrityError as exc:
+            await self.session.rollback()
+            winner = await self.repo.get_approval_by_call(
+                self.workspace_id, run_id, proposal.tool_call_id
+            )
+            if winner is not None and winner.arguments_hash == calculated_hash:
+                return winner
+            raise AppError("approval_conflict", "审批请求已存在", 409) from exc
+        except Exception:
+            await self.session.rollback()
+            raise
+        return approval
+
     async def create_approval(
         self,
         *,
@@ -264,7 +337,15 @@ class TodoApprovalService:
             ):
                 raise AppError("version_conflict", "Agent Run 已被其他操作更新", 409)
             await self.repo.append_event(
-                self.workspace_id, run.id, "approval.resolved", {"decision": "REJECTED"}
+                self.workspace_id,
+                run.id,
+                "approval.resolved",
+                {
+                    "approval_id": str(approval.id),
+                    "decision": "REJECTED",
+                    "resolved_by_user_id": str(self.actor_id),
+                    "resolved_at": now.isoformat(),
+                },
             )
             await self.repo.append_event(
                 self.workspace_id,
@@ -315,7 +396,15 @@ class TodoApprovalService:
             ):
                 raise AppError("version_conflict", "Agent Run 已被其他操作更新", 409)
             await self.repo.append_event(
-                self.workspace_id, run.id, "approval.resolved", {"decision": "EXPIRED"}
+                self.workspace_id,
+                run.id,
+                "approval.resolved",
+                {
+                    "approval_id": str(approval.id),
+                    "decision": "EXPIRED",
+                    "resolved_by_user_id": str(self.actor_id),
+                    "resolved_at": now.isoformat(),
+                },
             )
             await self.repo.append_event(
                 self.workspace_id,
@@ -358,6 +447,14 @@ class TodoApprovalService:
         run_id = run.id
         run_version = run.version
         try:
+            _, current_member = await self.access.require(
+                self.workspace_id,
+                minimum_role=MemberRole.EDITOR,
+                for_update=True,
+            )
+            actor_role = current_member.role
+            if arguments.assignee_id not in {None, self.actor_id}:
+                raise AppError("unsupported_assignee", "首版待办只能分配给当前操作人", 422)
             if not await self.repo.cas_approval_status(
                 self.workspace_id,
                 approval_id,
@@ -392,7 +489,15 @@ class TodoApprovalService:
             ):
                 return await self._recover_approved(approval_id)
             await self.repo.append_event(
-                self.workspace_id, run_id, "approval.resolved", {"decision": "APPROVED"}
+                self.workspace_id,
+                run_id,
+                "approval.resolved",
+                {
+                    "approval_id": str(approval_id),
+                    "decision": "APPROVED",
+                    "resolved_by_user_id": str(self.actor_id),
+                    "resolved_at": now.isoformat(),
+                },
             )
             await self.repo.append_event(
                 self.workspace_id,
@@ -404,7 +509,11 @@ class TodoApprovalService:
                 self.workspace_id,
                 run_id,
                 "todo.created",
-                {"todo_id": str(todo.id), "approval_id": str(approval_id)},
+                {
+                    "todo_id": str(todo.id),
+                    "approval_id": str(approval_id),
+                    "tool_call_id": str(tool_call_id),
+                },
             )
             await self.repo.append_event(
                 self.workspace_id,

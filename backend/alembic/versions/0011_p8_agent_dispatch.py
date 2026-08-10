@@ -42,10 +42,9 @@ def upgrade() -> None:
             name="fk_agent_dispatch_workspace_run",
         ),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint(
-            "workspace_id", "run_id", name="uq_agent_dispatch_workspace_run"
-        ),
+        sa.UniqueConstraint("workspace_id", "run_id", name="uq_agent_dispatch_workspace_run"),
         mysql_charset="utf8mb4",
+        mysql_collate="utf8mb4_unicode_ci",
     )
     op.create_index(
         "ix_agent_dispatch_due",
@@ -55,5 +54,36 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    connection = op.get_bind()
+    dispatch_blockers = int(
+        connection.scalar(
+            sa.text(
+                "SELECT COUNT(*) FROM agent_run_dispatches "
+                "WHERE status NOT IN ('SUCCEEDED','FAILED')"
+            )
+        )
+        or 0
+    )
+    run_blockers = int(
+        connection.scalar(
+            sa.text(
+                "SELECT COUNT(*) FROM agent_runs "
+                "WHERE status NOT IN ('COMPLETED','FAILED','CANCELLED')"
+            )
+        )
+        or 0
+    )
+    approval_blockers = int(
+        connection.scalar(
+            sa.text("SELECT COUNT(*) FROM approval_requests WHERE status = 'PENDING'")
+        )
+        or 0
+    )
+    if dispatch_blockers or run_blockers or approval_blockers:
+        raise RuntimeError(
+            "refusing 0011 downgrade while P8 recovery facts are active: "
+            f"dispatches={dispatch_blockers}, runs={run_blockers}, "
+            f"approvals={approval_blockers}"
+        )
     op.drop_index("ix_agent_dispatch_due", table_name="agent_run_dispatches")
     op.drop_table("agent_run_dispatches")

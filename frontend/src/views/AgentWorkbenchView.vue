@@ -6,10 +6,12 @@ import AppShell from '@/components/AppShell.vue'
 import AgentCitationCard from '@/components/AgentCitationCard.vue'
 import ToolApprovalCard from '@/components/ToolApprovalCard.vue'
 import { useAgentStore } from '@/stores/agent'
+import { useAuthStore } from '@/stores/auth'
 import { useWorkspaceStore } from '@/stores/workspaces'
 import type { AgentEventType, AgentRoute, ApprovalDecision } from '@/api/agentTypes'
 
 const agent = useAgentStore()
+const auth = useAuthStore()
 const workspaces = useWorkspaceStore()
 const route = useRoute()
 const router = useRouter()
@@ -84,6 +86,18 @@ watch(
   },
 )
 
+watch(
+  () => agent.membershipRefreshRevision,
+  async (revision, previousRevision) => {
+    if (revision === previousRevision || !auth.user) return
+    try {
+      await workspaces.initialize(auth.user.id, true)
+    } catch {
+      ElMessage.warning('审批权限已变化，但成员角色刷新失败，请稍后重试。')
+    }
+  },
+)
+
 async function startNewConversation() {
   agent.selectConversation(null)
   await router.replace({ query: {} })
@@ -105,7 +119,7 @@ async function send() {
 
 async function decide(decision: ApprovalDecision['decision'], comment?: string) {
   const succeeded = await agent.decideApproval(decision, comment)
-  if (succeeded) ElMessage.success(decision === 'APPROVED' ? '已批准，等待服务端执行' : '已拒绝，本次操作不会执行')
+  if (succeeded) ElMessage.success(decision === 'APPROVED' ? '已批准，待办已由服务端创建' : '已拒绝，本次操作不会执行')
 }
 </script>
 
@@ -229,6 +243,7 @@ async function decide(decision: ApprovalDecision['decision'], comment?: string) 
             :proposal="snapshot.tool_proposal"
             :approval="snapshot.approval"
             :busy="agent.decidingApproval"
+            :readonly="!workspaces.canWrite"
             @decide="decide"
           />
 

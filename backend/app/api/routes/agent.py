@@ -7,8 +7,9 @@ from fastapi import APIRouter, Header, Query, Request, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
-from app.api.deps import CurrentUser, SessionDep
+from app.api.deps import CurrentUser, SessionDep, SettingsDep
 from app.core.errors import AppError
+from app.core.security import access_token_expires_at
 from app.schemas.agent import (
     AgentRunCancel,
     AgentRunCreate,
@@ -118,9 +119,7 @@ async def get_conversation(
     session: SessionDep,
     user: CurrentUser,
 ) -> ConversationSummary:
-    return await AgentApiService(session, user.id).get_conversation(
-        workspace_id, conversation_id
-    )
+    return await AgentApiService(session, user.id).get_conversation(workspace_id, conversation_id)
 
 
 @router.patch(
@@ -162,9 +161,7 @@ async def create_run(
     user: CurrentUser,
     idempotency_key: IdempotencyKey = None,
 ) -> OperationAccepted:
-    return await AgentApiService(
-        session, user.id, request_id=_request_id(request)
-    ).create_run(
+    return await AgentApiService(session, user.id, request_id=_request_id(request)).create_run(
         workspace_id,
         conversation_id,
         payload,
@@ -172,9 +169,7 @@ async def create_run(
     )
 
 
-@router.get(
-    "/{workspace_id}/agent-runs/{run_id}", response_model=AgentRunSnapshot
-)
+@router.get("/{workspace_id}/agent-runs/{run_id}", response_model=AgentRunSnapshot)
 async def get_run(
     workspace_id: UUID,
     run_id: UUID,
@@ -199,9 +194,7 @@ async def cancel_run(
     if_match: IfMatch = None,
 ) -> AgentRunSnapshot:
     _validate_if_match(if_match, payload.version)
-    return await AgentApiService(
-        session, user.id, request_id=_request_id(request)
-    ).cancel_run(
+    return await AgentApiService(session, user.id, request_id=_request_id(request)).cancel_run(
         workspace_id,
         run_id,
         payload,
@@ -230,9 +223,7 @@ async def list_approvals(
     return ApprovalList(items=items, page=page, page_size=page_size, total=total)
 
 
-@router.get(
-    "/{workspace_id}/approvals/{approval_id}", response_model=ApprovalSummary
-)
+@router.get("/{workspace_id}/approvals/{approval_id}", response_model=ApprovalSummary)
 async def get_approval(
     workspace_id: UUID,
     approval_id: UUID,
@@ -315,9 +306,7 @@ async def update_todo(
     if_match: IfMatch = None,
 ) -> TodoSummary:
     _validate_if_match(if_match, payload.version)
-    return await AgentApiService(
-        session, user.id, request_id=_request_id(request)
-    ).update_todo(
+    return await AgentApiService(session, user.id, request_id=_request_id(request)).update_todo(
         workspace_id,
         todo_id,
         payload,
@@ -329,15 +318,20 @@ async def update_todo(
 async def stream_run_events(
     workspace_id: UUID,
     run_id: UUID,
+    request: Request,
     session: SessionDep,
     user: CurrentUser,
+    settings: SettingsDep,
     last_event_id: Annotated[str | None, Header(alias="Last-Event-ID")] = None,
 ) -> StreamingResponse:
+    authorization = request.headers.get("Authorization", "")
+    token = authorization[7:] if authorization.lower().startswith("bearer ") else ""
     service = AgentEventStreamService(
         _session_factory(session),
         user.id,
         workspace_id,
         run_id,
+        token_expires_at=access_token_expires_at(token, settings),
     )
     cursor, _terminal = await service.prepare(last_event_id)
     return StreamingResponse(

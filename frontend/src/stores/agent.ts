@@ -31,15 +31,20 @@ export const useAgentStore = defineStore('agent', () => {
   const decidingApproval = ref(false)
   const cancelling = ref(false)
   const errorMessage = ref('')
+  const lastErrorCode = ref<string | null>(null)
   const todoErrorMessage = ref('')
   const streamState = ref<AgentStreamState>('CLOSED')
   const retryInMs = ref<number | null>(null)
+  const membershipRefreshRevision = ref(0)
 
   let generation = 0
   let conversationsController: AbortController | null = null
   let runController: AbortController | null = null
   let todosController: AbortController | null = null
   let streamController: AbortController | null = null
+  let sendController: AbortController | null = null
+  let decisionController: AbortController | null = null
+  let cancelController: AbortController | null = null
   let refreshTimer: ReturnType<typeof setTimeout> | null = null
 
   const activeConversation = computed(
@@ -56,16 +61,26 @@ export const useAgentStore = defineStore('agent', () => {
     refreshTimer = null
   }
 
-  function abortRequests() {
-    conversationsController?.abort()
+  function abortConversationScopeRequests() {
     runController?.abort()
     todosController?.abort()
     streamController?.abort()
-    conversationsController = null
+    sendController?.abort()
+    decisionController?.abort()
+    cancelController?.abort()
     runController = null
     todosController = null
     streamController = null
+    sendController = null
+    decisionController = null
+    cancelController = null
     clearRefreshTimer()
+  }
+
+  function abortRequests() {
+    conversationsController?.abort()
+    conversationsController = null
+    abortConversationScopeRequests()
   }
 
   function resetState() {
@@ -82,6 +97,7 @@ export const useAgentStore = defineStore('agent', () => {
     decidingApproval.value = false
     cancelling.value = false
     errorMessage.value = ''
+    lastErrorCode.value = null
     todoErrorMessage.value = ''
     streamState.value = 'CLOSED'
     retryInMs.value = null
@@ -97,6 +113,7 @@ export const useAgentStore = defineStore('agent', () => {
 
   function reportScopedError(error: unknown, targetWorkspaceId: string): string {
     const mapped = mapApiError(error)
+    lastErrorCode.value = mapped.code
     if (
       mapped.status === 404
       && mapped.code === 'resource_not_found'
@@ -137,33 +154,41 @@ export const useAgentStore = defineStore('agent', () => {
     }
   }
 
-  async function createConversation(title?: string): Promise<ConversationSummary> {
+  async function createConversation(
+    title?: string,
+    signal?: AbortSignal,
+  ): Promise<ConversationSummary> {
     const targetWorkspaceId = workspaceId.value
     if (!targetWorkspaceId) throw new Error('Workspace context is not ready')
+    const requestGeneration = generation
     const input = title?.trim() ? { title: title.trim() } : {}
     const created = await executeIdempotentIntent(
       `workspace:${targetWorkspaceId}:conversation.create`,
       input,
-      (key) => agentApi.createConversation(targetWorkspaceId, input, key),
+      (key) => agentApi.createConversation(targetWorkspaceId, input, key, signal),
     )
-    if (workspaceId.value !== targetWorkspaceId) return created
+    if (signal?.aborted || generation !== requestGeneration || workspaceId.value !== targetWorkspaceId) {
+      return created
+    }
     conversations.value = [created, ...conversations.value.filter((item) => item.id !== created.id)]
     activeConversationId.value = created.id
     return created
   }
 
   function selectConversation(conversationId: string | null) {
-    streamController?.abort()
-    streamController = null
-    runController?.abort()
-    runController = null
-    clearRefreshTimer()
+    generation += 1
+    abortConversationScopeRequests()
     activeConversationId.value = conversationId
     activeRunId.value = null
     snapshot.value = null
     events.value = []
     loadingRun.value = false
+    loadingTodos.value = false
+    sending.value = false
+    decidingApproval.value = false
+    cancelling.value = false
     errorMessage.value = ''
+    lastErrorCode.value = null
     streamState.value = 'CLOSED'
     retryInMs.value = null
   }
@@ -190,6 +215,7 @@ export const useAgentStore = defineStore('agent', () => {
       if (controller.signal.aborted || generation !== requestGeneration || workspaceId.value !== targetWorkspaceId) return null
       acceptSnapshot(nextSnapshot, targetWorkspaceId)
       errorMessage.value = ''
+      lastErrorCode.value = null
       return nextSnapshot
     } catch (error) {
       if (controller.signal.aborted || generation !== requestGeneration) return null
@@ -258,6 +284,39 @@ export const useAgentStore = defineStore('agent', () => {
           terminal: terminalRunStatuses.has(recovered.run.status),
         }
       },
+      onClosed: (close) => {
+        if (
+          controller.signal.aborted
+          || generation !== requestGeneration
+          || workspaceId.value !== targetWorkspaceId
+        ) return
+        if (close.runId !== runId) {
+          errorMessage.value = '事件流关闭帧与当前运行不匹配，请重新加载。'
+          lastErrorCode.value = 'invalid_response'
+          return
+        }
+        if (close.reason === 'authorization_revoked') {
+          reportWorkspaceAccessRevoked(targetWorkspaceId)
+          return
+        }
+        if (close.reason === 'resource_unavailable') {
+          errorMessage.value = '运行事件流暂时不可用，已停止自动重连。请稍后手动恢复。'
+          lastErrorCode.value = 'stream_resource_unavailable'
+        }
+      },
+      onCleanClose: async () => {
+        const recovered = await refreshRun(runId)
+        if (
+          controller.signal.aborted
+          || generation !== requestGeneration
+          || workspaceId.value !== targetWorkspaceId
+        ) return
+        membershipRefreshRevision.value += 1
+        if (recovered && !terminalRunStatuses.has(recovered.run.status)) {
+          errorMessage.value = '事件流已由服务端结束，已刷新运行与成员事实。请确认权限后手动恢复。'
+          lastErrorCode.value = 'stream_closed'
+        }
+      },
     }).catch((error: unknown) => {
       if (controller.signal.aborted || generation !== requestGeneration) return
       errorMessage.value = reportScopedError(error, targetWorkspaceId)
@@ -280,11 +339,23 @@ export const useAgentStore = defineStore('agent', () => {
     if (!targetWorkspaceId) throw new Error('Workspace context is not ready')
     const normalizedMessage = message.trim()
     if (!normalizedMessage || sending.value) return null
+    sendController?.abort()
+    const controller = new AbortController()
+    sendController = controller
+    const requestGeneration = generation
     sending.value = true
     errorMessage.value = ''
+    lastErrorCode.value = null
     try {
       let conversation = activeConversation.value
-      if (!conversation) conversation = await createConversation(normalizedMessage.slice(0, 48))
+      if (!conversation) {
+        conversation = await createConversation(normalizedMessage.slice(0, 48), controller.signal)
+      }
+      if (
+        controller.signal.aborted
+        || generation !== requestGeneration
+        || workspaceId.value !== targetWorkspaceId
+      ) return null
       const input = {
         conversation_version: conversation.version,
         message: normalizedMessage,
@@ -295,23 +366,45 @@ export const useAgentStore = defineStore('agent', () => {
       const accepted = await executeIdempotentIntent(
         `workspace:${targetWorkspaceId}:conversation:${conversation.id}:run.create`,
         input,
-        (key) => agentApi.createRun(targetWorkspaceId, conversation!.id, input, key),
+        (key) => agentApi.createRun(
+          targetWorkspaceId,
+          conversation!.id,
+          input,
+          key,
+          controller.signal,
+        ),
       )
-      if (workspaceId.value !== targetWorkspaceId) return null
+      if (
+        controller.signal.aborted
+        || generation !== requestGeneration
+        || workspaceId.value !== targetWorkspaceId
+      ) return null
       activeRunId.value = accepted.resource_id
       snapshot.value = null
       events.value = []
       const recovered = await refreshRun(accepted.resource_id)
+      if (
+        controller.signal.aborted
+        || generation !== requestGeneration
+        || workspaceId.value !== targetWorkspaceId
+      ) return null
       if (recovered && !terminalRunStatuses.has(recovered.run.status)) startStream(accepted.resource_id)
       void loadConversations()
       return accepted.resource_id
     } catch (error) {
-      if (workspaceId.value === targetWorkspaceId) {
+      if (
+        !controller.signal.aborted
+        && generation === requestGeneration
+        && workspaceId.value === targetWorkspaceId
+      ) {
         errorMessage.value = reportScopedError(error, targetWorkspaceId)
       }
       return null
     } finally {
-      if (workspaceId.value === targetWorkspaceId) sending.value = false
+      if (sendController === controller) {
+        sendController = null
+        sending.value = false
+      }
     }
   }
 
@@ -319,8 +412,13 @@ export const useAgentStore = defineStore('agent', () => {
     const targetWorkspaceId = workspaceId.value
     const approval = snapshot.value?.approval
     if (!targetWorkspaceId || !approval || decidingApproval.value || approval.status !== 'PENDING') return false
+    decisionController?.abort()
+    const controller = new AbortController()
+    decisionController = controller
+    const requestGeneration = generation
     decidingApproval.value = true
     errorMessage.value = ''
+    lastErrorCode.value = null
     const input: ApprovalDecision = {
       decision,
       version: approval.version,
@@ -331,9 +429,19 @@ export const useAgentStore = defineStore('agent', () => {
       const result = await executeIdempotentIntent(
         `workspace:${targetWorkspaceId}:approval:${approval.id}:decision`,
         input,
-        (key) => agentApi.decideApproval(targetWorkspaceId, approval.id, input, key),
+        (key) => agentApi.decideApproval(
+          targetWorkspaceId,
+          approval.id,
+          input,
+          key,
+          controller.signal,
+        ),
       )
-      if (workspaceId.value !== targetWorkspaceId) return false
+      if (
+        controller.signal.aborted
+        || generation !== requestGeneration
+        || workspaceId.value !== targetWorkspaceId
+      ) return false
       if (result.run.workspace_id !== targetWorkspaceId || result.run.id !== approval.run_id) {
         throw new Error('Approval decision scope mismatch')
       }
@@ -352,17 +460,55 @@ export const useAgentStore = defineStore('agent', () => {
         }
       }
       await refreshRun(result.run.id)
+      if (
+        controller.signal.aborted
+        || generation !== requestGeneration
+        || workspaceId.value !== targetWorkspaceId
+      ) return false
       if (!terminalRunStatuses.has(result.run.status)) startStream(result.run.id)
       if (result.todo_id) void loadTodos()
       return true
     } catch (error) {
-      if (workspaceId.value === targetWorkspaceId) {
-        errorMessage.value = reportScopedError(error, targetWorkspaceId)
-        if (mapApiError(error).status === 409) await refreshRun(approval.run_id)
+      if (
+        controller.signal.aborted
+        || generation !== requestGeneration
+        || workspaceId.value !== targetWorkspaceId
+      ) return false
+      const mapped = mapApiError(error)
+      const message = reportScopedError(error, targetWorkspaceId)
+      const shouldRecoverFacts = mapped.status === 403
+        || mapped.status === 409
+        || mapped.status === 429
+        || (mapped.status !== undefined && mapped.status >= 500)
+        || mapped.code === 'network_error'
+        || mapped.code === 'request_timeout'
+      if (mapped.status === 403) membershipRefreshRevision.value += 1
+      if (shouldRecoverFacts) {
+        const recovered = await refreshRun(approval.run_id, true)
+        if (
+          controller.signal.aborted
+          || generation !== requestGeneration
+          || workspaceId.value !== targetWorkspaceId
+        ) return false
+        if (
+          recovered?.approval?.id === approval.id
+          && recovered.approval.status !== 'PENDING'
+          && terminalRunStatuses.has(recovered.run.status)
+        ) {
+          errorMessage.value = ''
+          lastErrorCode.value = null
+          if (recovered.todo) void loadTodos()
+          return true
+        }
       }
+      errorMessage.value = message
+      lastErrorCode.value = mapped.code
       return false
     } finally {
-      if (workspaceId.value === targetWorkspaceId) decidingApproval.value = false
+      if (decisionController === controller) {
+        decisionController = null
+        decidingApproval.value = false
+      }
     }
   }
 
@@ -370,22 +516,43 @@ export const useAgentStore = defineStore('agent', () => {
     const targetWorkspaceId = workspaceId.value
     const run = snapshot.value?.run
     if (!targetWorkspaceId || !run || terminalRunStatuses.has(run.status)) return false
+    cancelController?.abort()
+    const controller = new AbortController()
+    cancelController = controller
+    const requestGeneration = generation
     cancelling.value = true
     try {
       const cancelled = await executeIdempotentIntent(
         `workspace:${targetWorkspaceId}:agent-run:${run.id}:cancel`,
         { version: run.version },
-        (key) => agentApi.cancelRun(targetWorkspaceId, run.id, run.version, key),
+        (key) => agentApi.cancelRun(
+          targetWorkspaceId,
+          run.id,
+          run.version,
+          key,
+          controller.signal,
+        ),
       )
-      if (workspaceId.value !== targetWorkspaceId) return false
+      if (
+        controller.signal.aborted
+        || generation !== requestGeneration
+        || workspaceId.value !== targetWorkspaceId
+      ) return false
       acceptSnapshot(cancelled, targetWorkspaceId)
       stopStream()
       return true
     } catch (error) {
-      if (workspaceId.value === targetWorkspaceId) errorMessage.value = reportScopedError(error, targetWorkspaceId)
+      if (
+        !controller.signal.aborted
+        && generation === requestGeneration
+        && workspaceId.value === targetWorkspaceId
+      ) errorMessage.value = reportScopedError(error, targetWorkspaceId)
       return false
     } finally {
-      if (workspaceId.value === targetWorkspaceId) cancelling.value = false
+      if (cancelController === controller) {
+        cancelController = null
+        cancelling.value = false
+      }
     }
   }
 
@@ -429,9 +596,11 @@ export const useAgentStore = defineStore('agent', () => {
     decidingApproval,
     cancelling,
     errorMessage,
+    lastErrorCode,
     todoErrorMessage,
     streamState,
     retryInMs,
+    membershipRefreshRevision,
     runIsActive,
     canSend,
     activateWorkspace,

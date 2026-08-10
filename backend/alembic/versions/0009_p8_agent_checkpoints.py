@@ -41,6 +41,7 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("workspace_id", "thread_id", "checkpoint_ns", "checkpoint_id"),
         mysql_charset="utf8mb4",
+        mysql_collate="utf8mb4_unicode_ci",
     )
     op.create_index(
         "ix_agent_checkpoints_scope_created",
@@ -77,6 +78,7 @@ def upgrade() -> None:
             "write_idx",
         ),
         mysql_charset="utf8mb4",
+        mysql_collate="utf8mb4_unicode_ci",
     )
     op.create_index(
         "ix_agent_checkpoint_writes_scope",

@@ -312,13 +312,17 @@ export function parseTodoList(value: unknown): TodoList {
 
 export function parseApprovalDecisionResult(value: unknown): ApprovalDecisionResult {
   const item = object(value, 'approval_decision')
-  return {
-    approval_id: string(item.approval_id, 'approval_decision.approval_id'),
-    status: enumeration(item.status, ['APPROVED', 'REJECTED'] as const, 'approval_decision.status'),
-    decided_at: string(item.decided_at, 'approval_decision.decided_at'),
-    run: parseAgentRun(item.run),
-    todo_id: nullableString(item.todo_id, 'approval_decision.todo_id'),
+  const approvalId = string(item.approval_id, 'approval_decision.approval_id')
+  const status = enumeration(item.status, ['APPROVED', 'REJECTED'] as const, 'approval_decision.status')
+  const decidedAt = string(item.decided_at, 'approval_decision.decided_at')
+  const run = parseAgentRun(item.run)
+  const todoId = nullableString(item.todo_id, 'approval_decision.todo_id')
+  if (status === 'APPROVED') {
+    if (todoId === null || run.status !== 'COMPLETED') invalid('approval_decision.approved_facts')
+    return { approval_id: approvalId, status, decided_at: decidedAt, run, todo_id: todoId }
   }
+  if (todoId !== null || run.status !== 'CANCELLED') invalid('approval_decision.rejected_facts')
+  return { approval_id: approvalId, status, decided_at: decidedAt, run, todo_id: null }
 }
 
 function arrayOrEmpty(value: unknown, field: string): unknown[] {

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from uuid import UUID
@@ -185,9 +185,7 @@ class AgentApiService:
         *,
         idempotency_key: str | None,
     ) -> ConversationSummary:
-        _, member = await self.access.require(
-            workspace_id
-        )
+        _, member = await self.access.require(workspace_id)
         scope = "agent.conversation.create"
         request_hash = canonical_request_hash(payload.model_dump(mode="json"))
         key, replay = await self._replay(
@@ -635,7 +633,12 @@ class AgentApiService:
     async def get_approval(self, workspace_id: UUID, approval_id: UUID) -> ApprovalSummary:
         await self.access.require(workspace_id)
         approval = await self.repo.get_approval(workspace_id, approval_id)
-        if approval is None or approval.requested_by_user_id != self.actor_id:
+        if (
+            approval is None
+            or approval.requested_by_user_id != self.actor_id
+            or approval.checkpoint_ns is None
+            or approval.checkpoint_id is None
+        ):
             raise AppError("resource_not_found", "资源不存在", 404)
         return approval_summary(approval)
 
@@ -677,9 +680,7 @@ class AgentApiService:
         *,
         idempotency_key: str | None,
     ) -> TodoSummary:
-        _, member = await self.access.require(
-            workspace_id, minimum_role=MemberRole.EDITOR
-        )
+        _, member = await self.access.require(workspace_id, minimum_role=MemberRole.EDITOR)
         scope = f"agent.todo.update:{todo_id}"
         request_hash = canonical_request_hash(payload.model_dump(mode="json"))
         key, replay = await self._replay(
@@ -761,9 +762,7 @@ class ApprovalDecisionService:
         *,
         idempotency_key: str | None,
     ) -> ApprovalDecisionResult:
-        api = AgentApiService(
-            self.session, self.actor_id, request_id=self.request_id
-        )
+        api = AgentApiService(self.session, self.actor_id, request_id=self.request_id)
         await api.access.require(workspace_id, minimum_role=MemberRole.EDITOR)
         scope = f"agent.approval.decide:{approval_id}"
         request_hash = canonical_request_hash(payload.model_dump(mode="json"))
@@ -776,7 +775,12 @@ class ApprovalDecisionService:
         if replay is not None and replay.response_json is not None:
             return ApprovalDecisionResult.model_validate(replay.response_json)
         approval = await api.repo.get_approval(workspace_id, approval_id)
-        if approval is None or approval.requested_by_user_id != self.actor_id:
+        if (
+            approval is None
+            or approval.requested_by_user_id != self.actor_id
+            or approval.checkpoint_ns is None
+            or approval.checkpoint_id is None
+        ):
             raise AppError("resource_not_found", "资源不存在", 404)
         if approval.arguments_hash != payload.tool_args_hash:
             raise AppError("approval_parameters_tampered", "审批参数哈希不一致", 409)
@@ -850,13 +854,25 @@ class AgentEventStreamService:
         actor_id: UUID,
         workspace_id: UUID,
         run_id: UUID,
+        *,
+        token_expires_at: datetime | None = None,
+        clock: Callable[[], datetime] = utc_now,
     ) -> None:
         self.session_factory = session_factory
         self.actor_id = actor_id
         self.workspace_id = workspace_id
         self.run_id = run_id
+        self.token_expires_at = token_expires_at
+        self.clock = clock
+
+    def _token_valid(self) -> bool:
+        return self.token_expires_at is None or _aware_utc(self.clock()) < _aware_utc(
+            self.token_expires_at
+        )
 
     async def prepare(self, last_event_id: str | None) -> tuple[int, bool]:
+        if not self._token_valid():
+            raise AppError("not_authenticated", "登录凭据已过期", 401)
         if last_event_id is None or last_event_id == "":
             cursor = 0
         else:
@@ -931,13 +947,31 @@ class AgentEventStreamService:
         )
         return f"event: heartbeat\ndata: {heartbeat}\n\n"
 
+    @staticmethod
+    def encode_close(run_id: UUID, reason: str) -> str:
+        data = json.dumps(
+            {"run_id": str(run_id), "reason": reason, "retryable": False},
+            separators=(",", ":"),
+        )
+        # Control frames deliberately have no id/seq and never advance replay cursors.
+        return f"event: stream.closed\ndata: {data}\n\n"
+
     async def stream(self, cursor: int) -> AsyncIterator[str]:
         heartbeat_elapsed = 0
         while True:
             async with self.session_factory() as session:
                 repo = AgentRepository(session)
+                if not self._token_valid():
+                    yield self.encode_close(self.run_id, "token_expired")
+                    return
+                try:
+                    await WorkspaceAccessService(session, self.actor_id).require(self.workspace_id)
+                except AppError:
+                    yield self.encode_close(self.run_id, "authorization_revoked")
+                    return
                 run = await repo.get_run(self.workspace_id, self.run_id)
                 if run is None or run.requested_by_user_id != self.actor_id:
+                    yield self.encode_close(self.run_id, "resource_unavailable")
                     return
                 events = await repo.list_events_after(
                     self.workspace_id, self.run_id, sequence_no=cursor
@@ -954,4 +988,19 @@ class AgentEventStreamService:
             heartbeat_elapsed += 1
             if heartbeat_elapsed >= 15:
                 heartbeat_elapsed = 0
+                async with self.session_factory() as session:
+                    if not self._token_valid():
+                        yield self.encode_close(self.run_id, "token_expired")
+                        return
+                    try:
+                        await WorkspaceAccessService(session, self.actor_id).require(
+                            self.workspace_id
+                        )
+                    except AppError:
+                        yield self.encode_close(self.run_id, "authorization_revoked")
+                        return
+                    run = await AgentRepository(session).get_run(self.workspace_id, self.run_id)
+                    if run is None or run.requested_by_user_id != self.actor_id:
+                        yield self.encode_close(self.run_id, "resource_unavailable")
+                        return
                 yield self.encode_heartbeat(self.run_id)

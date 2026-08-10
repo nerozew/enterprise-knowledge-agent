@@ -13,6 +13,16 @@ export interface AgentStreamRecovery extends AgentStreamCursor {
   terminal: boolean
 }
 
+export type AgentStreamCloseReason =
+  | 'authorization_revoked'
+  | 'token_expired'
+  | 'resource_unavailable'
+
+export interface AgentStreamClose {
+  runId: string
+  reason: AgentStreamCloseReason
+}
+
 interface RawSseEvent {
   id?: string
   event?: string
@@ -25,11 +35,17 @@ export interface StreamAgentEventsOptions extends AgentStreamCursor {
   onEvent: (event: AgentEvent) => boolean | void
   onState?: (state: AgentStreamState, retryInMs?: number) => void
   onHistoryExpired: () => Promise<AgentStreamRecovery>
+  onCleanClose?: (cursor: AgentStreamCursor) => Promise<void> | void
+  onClosed?: (close: AgentStreamClose) => Promise<void> | void
   fetchImpl?: typeof fetch
   retryBaseMs?: number
   retryMaxMs?: number
   maxReconnectAttempts?: number
 }
+
+type ConsumeResponseResult =
+  | { kind: 'EVENT_STOP' | 'CLEAN_EOF' | 'ABORTED' }
+  | { kind: 'CONTROL_CLOSE'; close: AgentStreamClose }
 
 class AgentStreamHttpError extends ApiError {
   readonly retryable: boolean
@@ -44,6 +60,13 @@ class AgentStreamHttpError extends ApiError {
     super(message, { code: options.code, status: options.status })
     this.retryable = options.retryable
     this.retryAfterMs = options.retryAfterMs
+  }
+}
+
+class AgentStreamHistoryGap extends Error {
+  constructor() {
+    super('Agent event sequence is not continuous')
+    this.name = 'AgentStreamHistoryGap'
   }
 }
 
@@ -136,8 +159,48 @@ function parseBlock(block: string): RawSseEvent | null {
   }
 }
 
-function parseData(raw: RawSseEvent): AgentEvent | null {
+function parseControlClose(raw: RawSseEvent): AgentStreamClose {
+  if (raw.id !== undefined) {
+    throw new ApiError('Agent 事件流关闭帧包含非法游标，请重新加载', {
+      code: 'invalid_response',
+    })
+  }
+  let value: unknown
+  try {
+    value = JSON.parse(raw.data) as unknown
+  } catch {
+    value = null
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new ApiError('Agent 事件流包含无法识别的关闭帧，请重新加载', {
+      code: 'invalid_response',
+    })
+  }
+  const item = value as Record<string, unknown>
+  const reasons: readonly AgentStreamCloseReason[] = [
+    'authorization_revoked',
+    'token_expired',
+    'resource_unavailable',
+  ]
+  if (
+    typeof item.run_id !== 'string'
+    || !item.run_id
+    || typeof item.reason !== 'string'
+    || !reasons.includes(item.reason as AgentStreamCloseReason)
+    || item.retryable !== false
+    || item.id !== undefined
+    || item.seq !== undefined
+  ) {
+    throw new ApiError('Agent 事件流包含无法识别的关闭帧，请重新加载', {
+      code: 'invalid_response',
+    })
+  }
+  return { runId: item.run_id, reason: item.reason as AgentStreamCloseReason }
+}
+
+function parseData(raw: RawSseEvent): AgentEvent | AgentStreamClose | null {
   if (raw.event === 'heartbeat') return null
+  if (raw.event === 'stream.closed') return parseControlClose(raw)
   let data: unknown
   try {
     data = JSON.parse(raw.data) as unknown
@@ -156,32 +219,38 @@ async function consumeResponse(
   response: Response,
   signal: AbortSignal,
   consume: (event: AgentEvent) => boolean,
-): Promise<boolean> {
+): Promise<ConsumeResponseResult> {
   if (!response.body) {
     throw new ApiError('浏览器未能读取 Agent 事件流，请重新加载', { code: 'invalid_response' })
   }
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
+  let exhausted = false
   try {
     while (!signal.aborted) {
       const { done, value } = await reader.read()
-      if (done) break
+      if (done) {
+        exhausted = true
+        return { kind: 'CLEAN_EOF' }
+      }
       buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n')
       let boundary = buffer.indexOf('\n\n')
       while (boundary >= 0) {
         const block = buffer.slice(0, boundary)
         buffer = buffer.slice(boundary + 2)
         const raw = parseBlock(block)
-        const event = raw ? parseData(raw) : null
-        if (event && !consume(event)) return false
+        const frame = raw ? parseData(raw) : null
+        if (frame && 'reason' in frame) return { kind: 'CONTROL_CLOSE', close: frame }
+        if (frame && !consume(frame)) return { kind: 'EVENT_STOP' }
         boundary = buffer.indexOf('\n\n')
       }
     }
   } finally {
+    if (!exhausted) await reader.cancel().catch(() => undefined)
     reader.releaseLock()
   }
-  return !signal.aborted
+  return { kind: 'ABORTED' }
 }
 
 export async function streamAgentEvents(
@@ -206,39 +275,55 @@ export async function streamAgentEvents(
       let nextRetryAfterMs: number | null = null
       let madeProgress = false
       try {
-      const response = await fetchImpl(joinApiPath(options.path), {
-        method: 'GET',
-        headers,
-        cache: 'no-store',
-        signal: options.signal,
-      })
-      if (response.status === 401) {
-        window.dispatchEvent(new CustomEvent(UNAUTHORIZED_EVENT))
-        throw await fetchError(response)
-      }
-      if (response.status === 410) {
-        const error = await fetchError(response)
-        if (error.code !== 'event_history_expired') throw error
-        const recovery = await options.onHistoryExpired()
-        lastEventId = recovery.lastEventId
-        lastSequence = recovery.lastSequence
-        if (recovery.terminal) break
-        attempt = 0
-        continue
-      }
-      if (!response.ok) throw await fetchError(response)
-      options.onState?.('CONNECTED')
-      const shouldReconnect = await consumeResponse(response, options.signal, (event) => {
-        if (event.sequence_no <= lastSequence) return true
-        madeProgress = true
-        lastSequence = event.sequence_no
-        lastEventId = event.id
-        return options.onEvent(event) !== false
-      })
-      if (!shouldReconnect) break
+        const response = await fetchImpl(joinApiPath(options.path), {
+          method: 'GET',
+          headers,
+          cache: 'no-store',
+          signal: options.signal,
+        })
+        if (response.status === 401) {
+          window.dispatchEvent(new CustomEvent(UNAUTHORIZED_EVENT))
+          throw await fetchError(response)
+        }
+        if (response.status === 410) {
+          const error = await fetchError(response)
+          if (error.code !== 'event_history_expired') throw error
+          const recovery = await options.onHistoryExpired()
+          lastEventId = recovery.lastEventId
+          lastSequence = recovery.lastSequence
+          if (recovery.terminal) break
+          attempt = 0
+          continue
+        }
+        if (!response.ok) throw await fetchError(response)
+        options.onState?.('CONNECTED')
+        const consumeResult = await consumeResponse(response, options.signal, (event) => {
+          if (event.sequence_no <= lastSequence) return true
+          if (event.sequence_no !== lastSequence + 1) throw new AgentStreamHistoryGap()
+          madeProgress = true
+          lastSequence = event.sequence_no
+          lastEventId = event.id
+          return options.onEvent(event) !== false
+        })
+        if (consumeResult.kind === 'CONTROL_CLOSE') {
+          if (consumeResult.close.reason === 'token_expired') {
+            window.dispatchEvent(new CustomEvent(UNAUTHORIZED_EVENT))
+          }
+          await options.onClosed?.(consumeResult.close)
+        } else if (consumeResult.kind === 'CLEAN_EOF') {
+          await options.onCleanClose?.({ lastEventId, lastSequence })
+        }
+        break
       } catch (error) {
         if (options.signal.aborted) break
-        if (error instanceof AgentStreamHttpError) {
+        if (error instanceof AgentStreamHistoryGap) {
+          const recovery = await options.onHistoryExpired()
+          lastEventId = recovery.lastEventId
+          lastSequence = recovery.lastSequence
+          if (recovery.terminal) break
+          attempt = 0
+          continue
+        } else if (error instanceof AgentStreamHttpError) {
           if (!error.retryable) throw error
           nextRetryAfterMs = error.retryAfterMs
         } else if (!retryableNetworkError(error)) {
@@ -252,9 +337,9 @@ export async function streamAgentEvents(
           code: 'stream_reconnect_exhausted',
         })
       }
-      const retryInMs = nextRetryAfterMs ?? Math.min(
+      const retryInMs = Math.min(
         retryMaxMs,
-        retryBaseMs * (2 ** Math.min(attempt - 1, 5)),
+        nextRetryAfterMs ?? retryBaseMs * (2 ** Math.min(attempt - 1, 5)),
       )
       options.onState?.('RECONNECTING', retryInMs)
       await delay(retryInMs, options.signal).catch(() => undefined)

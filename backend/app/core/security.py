@@ -38,6 +38,17 @@ def decode_access_token(token: str, settings: Settings) -> UUID:
             raise ValueError("invalid token type")
         return UUID(payload["sub"])
     except (jwt.PyJWTError, KeyError, TypeError, ValueError) as exc:
-        raise AppError(
-            "authentication_required", "登录凭据无效或已过期", 401
-        ) from exc
+        raise AppError("authentication_required", "登录凭据无效或已过期", 401) from exc
+
+
+def access_token_expires_at(token: str, settings: Settings) -> datetime:
+    """Return the verified access-token expiry for long-lived transports."""
+
+    try:
+        payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
+        if payload.get("type") != "access":
+            raise ValueError("invalid token type")
+        expiry = datetime.fromtimestamp(float(payload["exp"]), tz=UTC)
+    except (jwt.PyJWTError, KeyError, TypeError, ValueError) as exc:
+        raise AppError("authentication_required", "登录凭据无效或已过期", 401) from exc
+    return expiry

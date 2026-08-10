@@ -19,6 +19,7 @@ describe('ToolApprovalCard', () => {
           created_at: '2026-08-03T00:00:00Z', updated_at: '2026-08-03T00:00:00Z',
         },
         busy: false,
+        readonly: false,
       },
       global: { plugins: [ElementPlus] },
     })
@@ -32,6 +33,33 @@ describe('ToolApprovalCard', () => {
     const buttons = wrapper.findAll('button')
     await buttons.find((button) => button.text().includes('批准'))?.trigger('click')
     expect(wrapper.emitted('decide')?.[0]).toEqual(['APPROVED', ''])
+    wrapper.unmount()
+  })
+
+  it('VIEWER 仅能查看审批事实，不显示决定控件', () => {
+    const wrapper = mount(ToolApprovalCard, {
+      props: {
+        proposal: {
+          tool_call_id: 'tool-1', tool_name: 'todo_create', arguments: { title: '完成复盘' },
+          tool_args_hash: 'a'.repeat(64), impact_scope: '当前 Workspace 创建 1 条待办', requires_approval: true,
+        },
+        approval: {
+          id: 'approval-1', workspace_id: 'workspace-1', run_id: 'run-1', tool_call_id: 'tool-1',
+          requested_by_user_id: 'user-1', tool_name: 'todo_create', arguments: { title: '完成复盘' },
+          tool_args_hash: 'a'.repeat(64), status: 'PENDING', version: 3,
+          expires_at: '2099-08-03T00:00:00Z', resolved_at: null,
+          created_at: '2026-08-03T00:00:00Z', updated_at: '2026-08-03T00:00:00Z',
+        },
+        busy: false,
+        readonly: true,
+      },
+      global: { plugins: [ElementPlus] },
+    })
+
+    expect(wrapper.text()).toContain('VIEWER')
+    expect(wrapper.text()).toContain('不能批准或拒绝')
+    expect(wrapper.find('textarea').exists()).toBe(false)
+    expect(wrapper.findAll('button')).toHaveLength(0)
     wrapper.unmount()
   })
 })

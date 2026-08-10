@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.engine import CursorResult
@@ -27,6 +27,14 @@ class AgentRepository:
 
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
+
+    async def database_utc_now(self) -> datetime:
+        dialect = self.session.get_bind().dialect.name
+        expression = func.utc_timestamp() if dialect == "mysql" else func.current_timestamp()
+        value = await self.session.scalar(select(expression))
+        if not isinstance(value, datetime):
+            raise RuntimeError("database did not return a UTC timestamp")
+        return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
     async def get_conversation(
         self, workspace_id: UUID, conversation_id: UUID, *, for_update: bool = False
@@ -94,9 +102,7 @@ class AgentRepository:
             )
         )
 
-    async def list_run_messages(
-        self, workspace_id: UUID, run_id: UUID
-    ) -> list[AgentMessageRecord]:
+    async def list_run_messages(self, workspace_id: UUID, run_id: UUID) -> list[AgentMessageRecord]:
         return list(
             await self.session.scalars(
                 select(AgentMessageRecord)
@@ -143,10 +149,10 @@ class AgentRepository:
         self,
         *,
         worker_id: str,
-        now: datetime,
         lease_seconds: int,
         limit: int,
     ) -> list[AgentRunDispatch]:
+        now = await self.database_utc_now()
         rows = list(
             await self.session.scalars(
                 select(AgentRunDispatch)
@@ -166,33 +172,35 @@ class AgentRepository:
                 .limit(limit)
             )
         )
-        lease_expires_at = now + timedelta(seconds=lease_seconds)
         for row in rows:
             row.status = "PROCESSING"
             row.attempts += 1
-            row.lease_owner = worker_id
-            row.lease_expires_at = lease_expires_at
+            row.lease_owner = f"{worker_id}:{uuid4()}"
+            row.lease_expires_at = now + timedelta(seconds=lease_seconds)
             row.updated_at = now
         await self.session.flush()
         return rows
 
     async def finish_dispatch(
         self,
+        workspace_id: UUID,
         dispatch_id: UUID,
         *,
-        worker_id: str,
+        claim_token: str,
         status: str,
-        now: datetime,
         error_code: str | None = None,
     ) -> bool:
+        now = await self.database_utc_now()
         result = cast(
             CursorResult[Any],
             await self.session.execute(
                 update(AgentRunDispatch)
                 .where(
                     AgentRunDispatch.id == dispatch_id,
+                    AgentRunDispatch.workspace_id == workspace_id,
                     AgentRunDispatch.status == "PROCESSING",
-                    AgentRunDispatch.lease_owner == worker_id,
+                    AgentRunDispatch.lease_owner == claim_token,
+                    AgentRunDispatch.lease_expires_at > now,
                 )
                 .values(
                     status=status,
@@ -205,6 +213,88 @@ class AgentRepository:
             ),
         )
         return result.rowcount == 1
+
+    async def renew_dispatch_lease(
+        self,
+        workspace_id: UUID,
+        dispatch_id: UUID,
+        *,
+        claim_token: str,
+        lease_seconds: int,
+    ) -> bool:
+        now = await self.database_utc_now()
+        result = cast(
+            CursorResult[Any],
+            await self.session.execute(
+                update(AgentRunDispatch)
+                .where(
+                    AgentRunDispatch.id == dispatch_id,
+                    AgentRunDispatch.workspace_id == workspace_id,
+                    AgentRunDispatch.status == "PROCESSING",
+                    AgentRunDispatch.lease_owner == claim_token,
+                    AgentRunDispatch.lease_expires_at > now,
+                )
+                .values(
+                    lease_expires_at=now + timedelta(seconds=lease_seconds),
+                    updated_at=now,
+                )
+            ),
+        )
+        return result.rowcount == 1
+
+    async def reschedule_dispatch(
+        self,
+        workspace_id: UUID,
+        dispatch_id: UUID,
+        *,
+        claim_token: str,
+        delay_seconds: float,
+        error_code: str,
+    ) -> bool:
+        now = await self.database_utc_now()
+        result = cast(
+            CursorResult[Any],
+            await self.session.execute(
+                update(AgentRunDispatch)
+                .where(
+                    AgentRunDispatch.id == dispatch_id,
+                    AgentRunDispatch.workspace_id == workspace_id,
+                    AgentRunDispatch.status == "PROCESSING",
+                    AgentRunDispatch.lease_owner == claim_token,
+                    AgentRunDispatch.lease_expires_at > now,
+                )
+                .values(
+                    status="PENDING",
+                    available_at=now + timedelta(seconds=delay_seconds),
+                    lease_owner=None,
+                    lease_expires_at=None,
+                    last_error_code=error_code,
+                    updated_at=now,
+                )
+            ),
+        )
+        return result.rowcount == 1
+
+    async def owns_dispatch_lease(
+        self,
+        workspace_id: UUID,
+        dispatch_id: UUID,
+        *,
+        claim_token: str,
+        for_update: bool = False,
+    ) -> bool:
+        now = await self.database_utc_now()
+        query = select(AgentRunDispatch.id).where(
+            AgentRunDispatch.workspace_id == workspace_id,
+            AgentRunDispatch.id == dispatch_id,
+            AgentRunDispatch.status == "PROCESSING",
+            AgentRunDispatch.lease_owner == claim_token,
+            AgentRunDispatch.lease_expires_at > now,
+        )
+        if for_update:
+            query = query.with_for_update()
+        owned = await self.session.scalar(query)
+        return owned is not None
 
     async def get_approval(
         self, workspace_id: UUID, approval_id: UUID, *, for_update: bool = False
@@ -264,6 +354,8 @@ class AgentRepository:
         filters = [
             ApprovalRequest.workspace_id == workspace_id,
             ApprovalRequest.requested_by_user_id == requested_by_user_id,
+            ApprovalRequest.checkpoint_ns.is_not(None),
+            ApprovalRequest.checkpoint_id.is_not(None),
         ]
         if status is not None:
             filters.append(ApprovalRequest.status == status)
@@ -306,8 +398,7 @@ class AgentRepository:
         if assignee_id is not None:
             filters.append(Todo.assignee_user_id == assignee_id)
         total = int(
-            await self.session.scalar(select(func.count()).select_from(Todo).where(*filters))
-            or 0
+            await self.session.scalar(select(func.count()).select_from(Todo).where(*filters)) or 0
         )
         rows = list(
             await self.session.scalars(
@@ -381,10 +472,7 @@ class AgentRepository:
             AgentRunEvent.sequence_no > after_sequence,
         )
         count = int(
-            await self.session.scalar(
-                select(func.count(AgentRunEvent.id)).where(*filters)
-            )
-            or 0
+            await self.session.scalar(select(func.count(AgentRunEvent.id)).where(*filters)) or 0
         )
         expired_count = int(
             await self.session.scalar(
@@ -405,6 +493,8 @@ class AgentRepository:
             .where(
                 ApprovalRequest.workspace_id == workspace_id,
                 ApprovalRequest.run_id == run_id,
+                ApprovalRequest.checkpoint_ns.is_not(None),
+                ApprovalRequest.checkpoint_id.is_not(None),
             )
             .order_by(ApprovalRequest.created_at.desc())
             .limit(1)

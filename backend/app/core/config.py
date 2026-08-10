@@ -17,8 +17,7 @@ class Settings(BaseSettings):
     debug: bool = False
     api_v1_prefix: str = "/api/v1"
     database_url: str = (
-        "mysql+asyncmy://inspiration:change-me@127.0.0.1:3306/"
-        "inspiration_assistant?charset=utf8mb4"
+        "mysql+asyncmy://inspiration:change-me@127.0.0.1:3306/inspiration_assistant?charset=utf8mb4"
     )
     jwt_secret: str = ""
     jwt_algorithm: str = "HS256"
@@ -29,6 +28,13 @@ class Settings(BaseSettings):
     ai_api_key: str | None = None
     ai_model: str | None = None
     ai_timeout_seconds: float = Field(default=30, ge=1, le=120)
+
+    agent_dispatch_poll_seconds: float = Field(default=1.0, ge=0.1, le=30)
+    agent_dispatch_claim_limit: int = Field(default=4, ge=1, le=100)
+    agent_dispatch_lease_seconds: int = Field(default=30, ge=10, le=300)
+    agent_dispatch_renew_seconds: int = Field(default=10, ge=1, le=120)
+    agent_dispatch_max_attempts: int = Field(default=5, ge=1, le=20)
+    agent_approval_ttl_seconds: int = Field(default=900, ge=60, le=86400)
 
     mcp_user_id: str | None = None
     mcp_local_token: str | None = None
@@ -51,16 +57,12 @@ class Settings(BaseSettings):
     rag_reranker_url: str | None = None
     rag_reranker_api_key: str | None = None
     rag_reranker_model: str | None = None
-    rag_reranker_profile: Literal["OPENAI_COMPATIBLE", "ALIBABA_QWEN3"] = (
-        "OPENAI_COMPATIBLE"
-    )
+    rag_reranker_profile: Literal["OPENAI_COMPATIBLE", "ALIBABA_QWEN3"] = "OPENAI_COMPATIBLE"
     rag_reranker_endpoint: str | None = Field(default=None, max_length=256)
     rag_llm_url: str | None = None
     rag_llm_api_key: str | None = None
     rag_llm_model: str | None = None
-    rag_llm_profile: Literal["OPENAI_JSON_SCHEMA", "ALIBABA_QWEN"] = (
-        "OPENAI_JSON_SCHEMA"
-    )
+    rag_llm_profile: Literal["OPENAI_JSON_SCHEMA", "ALIBABA_QWEN"] = "OPENAI_JSON_SCHEMA"
     rag_sync_ingestion_enabled: bool = False
     rag_max_upload_mib: int = Field(default=50, ge=1, le=200)
     rag_evidence_min_score: float = Field(default=0.015, ge=0, le=1)
@@ -100,6 +102,8 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def reject_unsafe_jwt_secret(self) -> Settings:
+        if self.agent_dispatch_renew_seconds >= self.agent_dispatch_lease_seconds:
+            raise ValueError("AGENT_DISPATCH_RENEW_SECONDS must be lower than lease seconds")
         if (
             self.rag_reranker_profile == "ALIBABA_QWEN3"
             and self.rag_reranker_model

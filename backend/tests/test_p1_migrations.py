@@ -32,6 +32,13 @@ def _database_url(path: Path) -> str:
 
 
 def _run_alembic(database_url: str, *arguments: str) -> None:
+    result, output = _invoke_alembic(database_url, *arguments)
+    assert result.returncode == 0, output
+
+
+def _invoke_alembic(
+    database_url: str, *arguments: str
+) -> tuple[subprocess.CompletedProcess[bytes], str]:
     environment = os.environ.copy()
     environment["DATABASE_URL"] = database_url
     result = subprocess.run(
@@ -43,7 +50,7 @@ def _run_alembic(database_url: str, *arguments: str) -> None:
         check=False,
     )
     output = (result.stdout + result.stderr).decode("utf-8", errors="replace")
-    assert result.returncode == 0, output
+    return result, output
 
 
 def test_p2_p4_sqlite_empty_database_upgrade_and_downgrade(tmp_path):
@@ -51,10 +58,8 @@ def test_p2_p4_sqlite_empty_database_upgrade_and_downgrade(tmp_path):
     url = _database_url(database)
     _run_alembic(url, "upgrade", "head")
     with sqlite3.connect(database) as connection:
-        revision = connection.execute(
-            "SELECT version_num FROM alembic_version"
-        ).fetchone()
-        assert revision == ("0010_p8_checkpoint_binding",)
+        revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
+        assert revision == ("0011_p8_agent_dispatch",)
         for table_name in (
             "documents",
             "document_versions",
@@ -68,6 +73,7 @@ def test_p2_p4_sqlite_empty_database_upgrade_and_downgrade(tmp_path):
             "agent_runs",
             "agent_run_events",
             "approval_requests",
+            "agent_run_dispatches",
             "todos",
             "agent_citations",
             "agent_checkpoints",
@@ -95,6 +101,97 @@ def test_p2_p4_sqlite_empty_database_upgrade_and_downgrade(tmp_path):
             "AND name != 'alembic_version'"
         ).fetchall()
         assert domain_tables == []
+
+
+def test_p8_dispatch_migration_upgrade_downgrade_upgrade_chain(tmp_path):
+    database = tmp_path / "p8-dispatch-chain.db"
+    url = _database_url(database)
+    _run_alembic(url, "upgrade", "0010_p8_checkpoint_binding")
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
+            "0010_p8_checkpoint_binding",
+        )
+        assert connection.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='agent_run_dispatches'"
+        ).fetchone() == (0,)
+    _run_alembic(url, "upgrade", "0011_p8_agent_dispatch")
+    _run_alembic(url, "downgrade", "0010_p8_checkpoint_binding")
+    _run_alembic(url, "upgrade", "0011_p8_agent_dispatch")
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
+            "0011_p8_agent_dispatch",
+        )
+        assert connection.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='agent_run_dispatches'"
+        ).fetchone() == (1,)
+
+
+def test_p8_dispatch_downgrade_refuses_active_recovery_facts(tmp_path):
+    database = tmp_path / "p8-dispatch-downgrade-guard.db"
+    url = _database_url(database)
+    _run_alembic(url, "upgrade", "0011_p8_agent_dispatch")
+    workspace_id, run_id, actor_id = (uuid4().hex for _ in range(3))
+    now = datetime.now(UTC).isoformat()
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "INSERT INTO agent_runs(id,workspace_id,conversation_id,requested_by_user_id,"
+            "status,graph_version,input_text,version,started_at,created_at,updated_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                run_id,
+                workspace_id,
+                uuid4().hex,
+                actor_id,
+                "RUNNING",
+                "p8",
+                "test",
+                1,
+                now,
+                now,
+                now,
+            ),
+        )
+        connection.execute(
+            "INSERT INTO agent_run_dispatches(id,workspace_id,run_id,status,attempts,"
+            "available_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
+            (uuid4().hex, workspace_id, run_id, "PENDING", 0, now, now, now),
+        )
+        connection.execute(
+            "INSERT INTO approval_requests(id,workspace_id,run_id,tool_call_id,"
+            "requested_by_user_id,tool_name,arguments_json,arguments_hash,status,version,"
+            "expires_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                uuid4().hex,
+                workspace_id,
+                run_id,
+                uuid4().hex,
+                actor_id,
+                "todo_create",
+                "{}",
+                "0" * 64,
+                "PENDING",
+                1,
+                now,
+                now,
+                now,
+            ),
+        )
+        connection.commit()
+
+    result, output = _invoke_alembic(url, "downgrade", "0010_p8_checkpoint_binding")
+    assert result.returncode != 0
+    assert "dispatches=1, runs=1, approvals=1" in output
+    with sqlite3.connect(database) as connection:
+        connection.execute("UPDATE agent_run_dispatches SET status='SUCCEEDED'")
+        connection.execute("UPDATE agent_runs SET status='COMPLETED'")
+        connection.commit()
+    result, output = _invoke_alembic(url, "downgrade", "0010_p8_checkpoint_binding")
+    assert result.returncode != 0
+    assert "dispatches=0, runs=0, approvals=1" in output
+    with sqlite3.connect(database) as connection:
+        connection.execute("UPDATE approval_requests SET status='REJECTED'")
+        connection.commit()
+    _run_alembic(url, "downgrade", "0010_p8_checkpoint_binding")
 
 
 def test_p1_sqlite_chinese_mvp_backfill_and_composite_constraints(tmp_path):
@@ -150,8 +247,7 @@ def test_p1_sqlite_chinese_mvp_backfill_and_composite_constraints(tmp_path):
             ),
         )
         connection.execute(
-            "INSERT INTO inspiration_tags(inspiration_id,tag_id,created_at) "
-            "VALUES(?,?,?)",
+            "INSERT INTO inspiration_tags(inspiration_id,tag_id,created_at) VALUES(?,?,?)",
             (inspiration_id, tag_id, now),
         )
         connection.execute(
@@ -179,8 +275,7 @@ def test_p1_sqlite_chinese_mvp_backfill_and_composite_constraints(tmp_path):
             "SELECT COUNT(*) FROM workspaces WHERE type='PERSONAL'"
         ).fetchone() == (1,)
         assert connection.execute(
-            "SELECT COUNT(*) FROM workspace_members "
-            "WHERE role='OWNER' AND status='ACTIVE'"
+            "SELECT COUNT(*) FROM workspace_members WHERE role='OWNER' AND status='ACTIVE'"
         ).fetchone() == (1,)
         for table_name in (
             "inspirations",
@@ -191,9 +286,10 @@ def test_p1_sqlite_chinese_mvp_backfill_and_composite_constraints(tmp_path):
             assert connection.execute(
                 f"SELECT COUNT(*) FROM {table_name} WHERE workspace_id IS NULL"
             ).fetchone() == (0,)
-        assert connection.execute(
-            "SELECT title, content FROM inspirations"
-        ).fetchone() == ("中文标题", "中文正文")
+        assert connection.execute("SELECT title, content FROM inspirations").fetchone() == (
+            "中文标题",
+            "中文正文",
+        )
         workspace_id = connection.execute(
             "SELECT workspace_id FROM tags WHERE id=?", (tag_id,)
         ).fetchone()[0]
@@ -213,9 +309,7 @@ def test_p1_sqlite_chinese_mvp_backfill_and_composite_constraints(tmp_path):
                     now,
                 ),
             )
-        foreign_keys = connection.execute(
-            "PRAGMA foreign_key_list(inspiration_tags)"
-        ).fetchall()
+        foreign_keys = connection.execute("PRAGMA foreign_key_list(inspiration_tags)").fetchall()
         mapped_columns = {(row[3], row[4]) for row in foreign_keys}
         assert {
             ("workspace_id", "workspace_id"),
@@ -229,22 +323,14 @@ def test_p1_database_upgrades_forward_to_p2_p4_without_losing_records(tmp_path):
     url = _database_url(database)
     _run_alembic(url, "upgrade", "0005_p1_workspace_contract")
     with sqlite3.connect(database) as connection:
-        revision = connection.execute(
-            "SELECT version_num FROM alembic_version"
-        ).fetchone()
+        revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
         assert revision == ("0005_p1_workspace_contract",)
-        assert connection.execute(
-            "SELECT COUNT(*) FROM idempotency_records"
-        ).fetchone() == (0,)
+        assert connection.execute("SELECT COUNT(*) FROM idempotency_records").fetchone() == (0,)
     _run_alembic(url, "upgrade", "head")
     with sqlite3.connect(database) as connection:
-        revision = connection.execute(
-            "SELECT version_num FROM alembic_version"
-        ).fetchone()
-        assert revision == ("0010_p8_checkpoint_binding",)
-        columns = {
-            row[1] for row in connection.execute("PRAGMA table_info(idempotency_records)")
-        }
+        revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
+        assert revision == ("0011_p8_agent_dispatch",)
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(idempotency_records)")}
         assert {
             "status",
             "request_hash_algorithm",
@@ -263,9 +349,7 @@ async def test_p1_mysql_upgrade_charset_backfill_and_conflict():
     _run_alembic(database_url, "upgrade", "head")
     engine = create_async_engine(database_url)
     async with engine.connect() as connection:
-        charset = (
-            await connection.execute(text("SELECT @@character_set_database"))
-        ).scalar_one()
+        charset = (await connection.execute(text("SELECT @@character_set_database"))).scalar_one()
         assert charset == "utf8mb4"
         for table_name in (
             "inspirations",
@@ -275,10 +359,7 @@ async def test_p1_mysql_upgrade_charset_backfill_and_conflict():
         ):
             missing = (
                 await connection.execute(
-                    text(
-                        f"SELECT COUNT(*) FROM {table_name} "
-                        "WHERE workspace_id IS NULL"
-                    )
+                    text(f"SELECT COUNT(*) FROM {table_name} WHERE workspace_id IS NULL")
                 )
             ).scalar_one()
             assert missing == 0
@@ -364,9 +445,7 @@ async def test_p1_mysql_upgrade_charset_backfill_and_conflict():
 async def test_p1_mysql_concurrent_member_same_key_replays_winner():
     database_url = os.environ["P1_TEST_MYSQL_URL"]
     engine = create_async_engine(database_url)
-    factory = async_sessionmaker(
-        engine, class_=AsyncSession, expire_on_commit=False
-    )
+    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     owner_id = uuid4()
     candidate_id = uuid4()
     workspace_id = uuid4()
@@ -431,9 +510,7 @@ async def test_p1_mysql_concurrent_member_same_key_replays_winner():
                 {"wid": workspace_id},
             )
             await connection.execute(
-                text(
-                    "DELETE FROM idempotency_records WHERE workspace_id=:wid"
-                ),
+                text("DELETE FROM idempotency_records WHERE workspace_id=:wid"),
                 {"wid": workspace_id},
             )
             await connection.execute(
@@ -458,9 +535,7 @@ async def test_p1_mysql_concurrent_member_same_key_replays_winner():
 async def test_p1_mysql_concurrent_inspiration_patch_replays_winner():
     database_url = os.environ["P1_TEST_MYSQL_URL"]
     engine = create_async_engine(database_url)
-    factory = async_sessionmaker(
-        engine, class_=AsyncSession, expire_on_commit=False
-    )
+    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     owner_id = uuid4()
     workspace_id = uuid4()
     inspiration_id = uuid4()
@@ -514,18 +589,14 @@ async def test_p1_mysql_concurrent_inspiration_patch_replays_winner():
 
     async def update_inspiration():
         async with factory() as session:
-            return await InspirationService(
-                session, owner_id, workspace_id
-            ).update(
+            return await InspirationService(session, owner_id, workspace_id).update(
                 inspiration_id,
                 InspirationPatch(version=1, title="并发后"),
                 "mysql-inspiration-patch-race-key",
             )
 
     try:
-        first, second = await asyncio.gather(
-            update_inspiration(), update_inspiration()
-        )
+        first, second = await asyncio.gather(update_inspiration(), update_inspiration())
         assert first.response_json == second.response_json
         assert first.response_json is not None
         assert first.response_json["id"] == str(inspiration_id)
@@ -538,9 +609,7 @@ async def test_p1_mysql_concurrent_inspiration_patch_replays_winner():
                 {"wid": workspace_id},
             )
             await connection.execute(
-                text(
-                    "DELETE FROM idempotency_records WHERE workspace_id=:wid"
-                ),
+                text("DELETE FROM idempotency_records WHERE workspace_id=:wid"),
                 {"wid": workspace_id},
             )
             await connection.execute(

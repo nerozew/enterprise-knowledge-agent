@@ -39,11 +39,15 @@ export const agentApi = {
     workspaceId: string,
     input: ConversationCreate,
     idempotencyKey: string,
+    signal?: AbortSignal,
   ): Promise<ConversationSummary> {
     const { data } = await apiClient.post<unknown>(
       `/workspaces/${workspaceId}/conversations`,
       input,
-      { headers: { 'Idempotency-Key': idempotencyKey } },
+      {
+        headers: { 'Idempotency-Key': idempotencyKey },
+        ...(signal ? { signal } : {}),
+      },
     )
     return parseConversation(data)
   },
@@ -65,11 +69,15 @@ export const agentApi = {
     conversationId: string,
     input: AgentRunCreate,
     idempotencyKey: string,
+    signal?: AbortSignal,
   ): Promise<OperationAccepted> {
     const { data } = await apiClient.post<unknown>(
       `/workspaces/${workspaceId}/conversations/${conversationId}/runs`,
       input,
-      { headers: { 'Idempotency-Key': idempotencyKey } },
+      {
+        headers: { 'Idempotency-Key': idempotencyKey },
+        ...(signal ? { signal } : {}),
+      },
     )
     return parseOperationAccepted(data)
   },
@@ -91,6 +99,7 @@ export const agentApi = {
     runId: string,
     version: number,
     idempotencyKey: string,
+    signal?: AbortSignal,
   ): Promise<AgentRunSnapshot> {
     const { data } = await apiClient.post<unknown>(
       `/workspaces/${workspaceId}/agent-runs/${runId}/cancel`,
@@ -100,6 +109,7 @@ export const agentApi = {
           'Idempotency-Key': idempotencyKey,
           'If-Match': `"${version}"`,
         },
+        ...(signal ? { signal } : {}),
       },
     )
     return parseAgentRunSnapshot(data)
@@ -122,6 +132,7 @@ export const agentApi = {
     approvalId: string,
     input: ApprovalDecision,
     idempotencyKey: string,
+    signal?: AbortSignal,
   ): Promise<ApprovalDecisionResult> {
     const { data } = await apiClient.post<unknown>(
       `/workspaces/${workspaceId}/approvals/${approvalId}/decision`,
@@ -131,6 +142,7 @@ export const agentApi = {
           'Idempotency-Key': idempotencyKey,
           'If-Match': `"${input.version}"`,
         },
+        ...(signal ? { signal } : {}),
       },
     )
     return parseApprovalDecisionResult(data)
@@ -156,4 +168,3 @@ export const agentApi = {
 export function agentEventsPath(workspaceId: string, runId: string): string {
   return `/workspaces/${workspaceId}/agent-runs/${runId}/events`
 }
-

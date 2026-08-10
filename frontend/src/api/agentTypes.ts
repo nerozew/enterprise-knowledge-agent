@@ -170,13 +170,19 @@ export interface ApprovalDecision {
   comment?: string
 }
 
-export interface ApprovalDecisionResult {
+interface ApprovalDecisionResultBase {
   approval_id: string
-  status: 'APPROVED' | 'REJECTED'
   decided_at: string
   run: AgentRunSummary
-  todo_id: string | null
 }
+
+export type ApprovalDecisionResult = ApprovalDecisionResultBase & ({
+  status: 'APPROVED'
+  todo_id: string
+} | {
+  status: 'REJECTED'
+  todo_id: null
+})
 
 export interface TodoSummary {
   id: string

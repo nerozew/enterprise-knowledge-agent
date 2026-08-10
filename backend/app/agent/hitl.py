@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.agent.checkpoint import (
     TODO_CHECKPOINT_NAMESPACE,
+    TODO_HITL_GRAPH_VERSION,
     AsyncSqlAlchemyCheckpointSaver,
     CheckpointCorruptedError,
     CheckpointInUseError,
@@ -149,7 +150,11 @@ def build_todo_hitl_graph(
     saver: AsyncSqlAlchemyCheckpointSaver,
     *,
     clock: Callable[[], datetime] = utc_now,
+    dispatch_id: UUID | None = None,
+    claim_token: str | None = None,
 ) -> CompiledStateGraph:
+    if (dispatch_id is None) != (claim_token is None):
+        raise ValueError("dispatch_id and claim_token must be provided together")
     graph = StateGraph(TodoWorkflowState)
 
     async def approval_step(state: TodoWorkflowState) -> dict[str, Any]:
@@ -164,10 +169,12 @@ def build_todo_hitl_graph(
                 workflow.actor_id,
                 workflow.workspace_id,
                 clock=lambda: now,
-            ).create_approval(
+            ).prepare_approval(
                 run_id=workflow.run_id,
                 proposal=workflow.proposal,
                 expires_at=workflow.expires_at,
+                dispatch_id=dispatch_id,
+                claim_token=claim_token,
             )
 
         persisted_proposal = ToolProposal(
@@ -229,6 +236,10 @@ class TodoApprovalResumeWorker:
 
     @staticmethod
     def _checkpoint_namespace(run_id: UUID) -> str:
+        return f"{TODO_CHECKPOINT_NAMESPACE}:todo:{run_id}"
+
+    @staticmethod
+    def _legacy_run_namespace(run_id: UUID) -> str:
         return f"{TODO_CHECKPOINT_NAMESPACE}:{run_id}"
 
     def _saver(
@@ -257,6 +268,8 @@ class TodoApprovalResumeWorker:
                 or run.conversation_id != workflow.conversation_id
             ):
                 raise AppError("resource_not_found", "资源不存在", 404)
+            if run.graph_version != TODO_HITL_GRAPH_VERSION:
+                raise AppError("checkpoint_binding_conflict", "Checkpoint 图版本不一致", 409)
             if run.route != "TODO_CREATE":
                 raise AppError("invalid_run_state", "当前运行不是待办创建路由", 409)
             if run.status not in {
@@ -290,6 +303,8 @@ class TodoApprovalResumeWorker:
                 or run.route != "TODO_CREATE"
             ):
                 raise AppError("resource_not_found", "资源不存在", 404)
+            if run.graph_version != TODO_HITL_GRAPH_VERSION:
+                raise AppError("checkpoint_binding_conflict", "Checkpoint 图版本不一致", 409)
             calculated_hash = canonical_request_hash(approval.arguments_json)
             if approval.tool_name != "todo_create" or approval.arguments_hash != calculated_hash:
                 raise AppError("approval_parameters_tampered", "审批参数不一致", 409)
@@ -416,23 +431,32 @@ class TodoApprovalResumeWorker:
         )
         if checkpoint_id is not None:
             return saver, checkpoint_id
-        legacy_saver = self._saver(
-            workspace_id,
-            run_id,
-            checkpoint_ns=TODO_CHECKPOINT_NAMESPACE,
-        )
-        if legacy_saver.checkpoint_ns == saver.checkpoint_ns:
-            return None
-        checkpoint_id = await self._find_interrupt_checkpoint_id(
-            legacy_saver,
-            workspace_id=workspace_id,
-            actor_id=actor_id,
-            conversation_id=conversation_id,
-            run_id=run_id,
-            approval_id=approval_id,
-            proposal=proposal,
-        )
-        return (legacy_saver, checkpoint_id) if checkpoint_id is not None else None
+        matches: list[tuple[AsyncSqlAlchemyCheckpointSaver, str]] = []
+        for legacy_namespace in (
+            self._legacy_run_namespace(run_id),
+            TODO_CHECKPOINT_NAMESPACE,
+        ):
+            if legacy_namespace == saver.checkpoint_ns:
+                continue
+            legacy_saver = self._saver(
+                workspace_id,
+                run_id,
+                checkpoint_ns=legacy_namespace,
+            )
+            checkpoint_id = await self._find_interrupt_checkpoint_id(
+                legacy_saver,
+                workspace_id=workspace_id,
+                actor_id=actor_id,
+                conversation_id=conversation_id,
+                run_id=run_id,
+                approval_id=approval_id,
+                proposal=proposal,
+            )
+            if checkpoint_id is not None:
+                matches.append((legacy_saver, checkpoint_id))
+        if len(matches) > 1:
+            raise AppError("checkpoint_ambiguous", "兼容窗口存在多个匹配 Checkpoint", 409)
+        return matches[0] if matches else None
 
     async def _bind_checkpoint(
         self,
@@ -444,15 +468,19 @@ class TodoApprovalResumeWorker:
         approval_id: UUID,
         checkpoint_ns: str,
         checkpoint_id: str,
+        dispatch_id: UUID | None = None,
+        claim_token: str | None = None,
     ) -> None:
         async with self.session_factory() as session:
-            await AgentCheckpointBindingService(session, actor_id).bind(
+            await AgentCheckpointBindingService(session, actor_id).publish(
                 workspace_id=workspace_id,
                 conversation_id=conversation_id,
                 run_id=run_id,
                 approval_id=approval_id,
                 checkpoint_ns=checkpoint_ns,
                 checkpoint_id=checkpoint_id,
+                dispatch_id=dispatch_id,
+                claim_token=claim_token,
             )
 
     async def _replay_existing_interrupt(
@@ -460,6 +488,8 @@ class TodoApprovalResumeWorker:
         saver: AsyncSqlAlchemyCheckpointSaver,
         *,
         workflow: TodoWorkflowInput,
+        dispatch_id: UUID | None = None,
+        claim_token: str | None = None,
     ) -> TodoWorkflowState | None:
         async with self.session_factory() as session:
             approval = await AgentRepository(session).get_approval_by_call(
@@ -486,6 +516,7 @@ class TodoApprovalResumeWorker:
             None,
             saver.checkpoint_ns,
             TODO_CHECKPOINT_NAMESPACE,
+            self._legacy_run_namespace(workflow.run_id),
         }:
             raise AppError("checkpoint_binding_conflict", "Checkpoint 版本不一致", 409)
         if approval.checkpoint_ns is not None:
@@ -515,6 +546,8 @@ class TodoApprovalResumeWorker:
                 approval_id=approval.id,
                 checkpoint_ns=selected_saver.checkpoint_ns,
                 checkpoint_id=checkpoint_id,
+                dispatch_id=dispatch_id,
+                claim_token=claim_token,
             )
         checkpoint_tuple = await selected_saver.aget_tuple(
             checkpoint_config(
@@ -548,7 +581,15 @@ class TodoApprovalResumeWorker:
             dict(values) | {"__interrupt__": interrupt_values[0]},
         )
 
-    async def start(self, workflow: TodoWorkflowInput) -> TodoWorkflowState:
+    async def start(
+        self,
+        workflow: TodoWorkflowInput,
+        *,
+        dispatch_id: UUID | None = None,
+        claim_token: str | None = None,
+    ) -> TodoWorkflowState:
+        if (dispatch_id is None) != (claim_token is None):
+            raise ValueError("dispatch_id and claim_token must be provided together")
         await self._authorize_start(workflow)
         # Close the preflight-to-execution revocation window before constructing a
         # saver. The graph node performs the same authorization again before facts.
@@ -557,13 +598,20 @@ class TodoApprovalResumeWorker:
         await WorkspaceCheckpointMaintenanceService(
             self.session_factory, workspace_id=workflow.workspace_id
         ).delete_orphan_writes(older_than=_aware_utc(self.clock()) - timedelta(hours=24))
-        replayed = await self._replay_existing_interrupt(saver, workflow=workflow)
+        replayed = await self._replay_existing_interrupt(
+            saver,
+            workflow=workflow,
+            dispatch_id=dispatch_id,
+            claim_token=claim_token,
+        )
         if replayed is not None:
             return replayed
         graph = build_todo_hitl_graph(
             self.session_factory,
             saver,
             clock=self.clock,
+            dispatch_id=dispatch_id,
+            claim_token=claim_token,
         )
         config = checkpoint_config(
             workspace_id=workflow.workspace_id,
@@ -616,6 +664,8 @@ class TodoApprovalResumeWorker:
             approval_id=approval.id,
             checkpoint_ns=saver.checkpoint_ns,
             checkpoint_id=checkpoint_id,
+            dispatch_id=dispatch_id,
+            claim_token=claim_token,
         )
         return cast(TodoWorkflowState, result)
 
@@ -660,6 +710,7 @@ class TodoApprovalResumeWorker:
             None,
             TODO_CHECKPOINT_NAMESPACE,
             expected_checkpoint_ns,
+            self._legacy_run_namespace(authorized.run_id),
         }:
             raise AppError("checkpoint_binding_conflict", "Checkpoint 版本不一致", 409)
         saver = self._saver(
@@ -675,6 +726,7 @@ class TodoApprovalResumeWorker:
             None,
             TODO_CHECKPOINT_NAMESPACE,
             expected_checkpoint_ns,
+            self._legacy_run_namespace(authorized.run_id),
         }:
             raise AppError("checkpoint_binding_conflict", "Checkpoint 版本不一致", 409)
         if checkpoint_id is None:

@@ -40,6 +40,7 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("workspace_id", "id", name="uq_conversations_workspace_id"),
         mysql_charset="utf8mb4",
+        mysql_collate="utf8mb4_unicode_ci",
     )
     op.create_index(
         "ix_conversations_workspace_updated",
@@ -84,6 +85,7 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("workspace_id", "id", name="uq_agent_runs_workspace_id"),
         mysql_charset="utf8mb4",
+        mysql_collate="utf8mb4_unicode_ci",
     )
     op.create_index(
         "ix_agent_runs_workspace_status_updated",
@@ -133,6 +135,7 @@ def upgrade() -> None:
             name="uq_messages_workspace_conversation_seq",
         ),
         mysql_charset="utf8mb4",
+        mysql_collate="utf8mb4_unicode_ci",
     )
     op.create_index(
         "ix_messages_workspace_conversation",
@@ -162,6 +165,7 @@ def upgrade() -> None:
             "workspace_id", "run_id", "sequence_no", name="uq_agent_run_events_run_seq"
         ),
         mysql_charset="utf8mb4",
+        mysql_collate="utf8mb4_unicode_ci",
     )
     op.create_index(
         "ix_agent_run_events_workspace_run",
@@ -212,6 +216,7 @@ def upgrade() -> None:
             name="uq_approval_workspace_id_run_tool",
         ),
         mysql_charset="utf8mb4",
+        mysql_collate="utf8mb4_unicode_ci",
     )
     op.create_index(
         "ix_approval_workspace_status_expiry",
@@ -269,6 +274,7 @@ def upgrade() -> None:
         ),
         sa.UniqueConstraint("workspace_id", "approval_id", name="uq_todos_workspace_approval"),
         mysql_charset="utf8mb4",
+        mysql_collate="utf8mb4_unicode_ci",
     )
     op.create_index("ix_todos_workspace_status_due", "todos", ["workspace_id", "status", "due_at"])
     op.create_index(
@@ -319,6 +325,7 @@ def upgrade() -> None:
             "workspace_id", "run_id", "ordinal", name="uq_agent_citations_run_ordinal"
         ),
         mysql_charset="utf8mb4",
+        mysql_collate="utf8mb4_unicode_ci",
     )
     op.create_index(
         "ix_agent_citations_workspace_run",

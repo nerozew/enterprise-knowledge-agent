@@ -4,6 +4,7 @@ import hashlib
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import UTC
 from typing import Any, Literal, cast
 from uuid import uuid5
 
@@ -123,6 +124,8 @@ def build_agent_graph(kernel: AgentKernel) -> CompiledStateGraph:
     graph = StateGraph(AgentState)
 
     async def classify_route(state: AgentState) -> dict[str, Any]:
+        if state.route is not None:
+            return {"route": state.route, "error_code": None, "final_answer": None}
         try:
             raw = await kernel.router.decide(
                 messages=state.messages,
@@ -226,6 +229,14 @@ def build_agent_graph(kernel: AgentKernel) -> CompiledStateGraph:
                 "error_code": "TODO_ARGUMENTS_REQUIRED",
                 "final_answer": "创建待办所需参数不足，请至少提供明确的标题。",
             }
+        arguments = arguments.model_copy(
+            update={
+                "assignee_id": arguments.assignee_id or state.actor_id,
+                "due_at": (
+                    arguments.due_at.astimezone(UTC) if arguments.due_at is not None else None
+                ),
+            }
+        )
         arguments_hash = _canonical_hash(arguments.model_dump(mode="json"))
         proposal = ToolProposal(
             tool_call_id=uuid5(state.run_id, f"todo_create:{arguments_hash}"),

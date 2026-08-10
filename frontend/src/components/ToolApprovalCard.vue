@@ -6,6 +6,7 @@ const props = defineProps<{
   proposal: ToolProposal
   approval: ApprovalSummary
   busy: boolean
+  readonly: boolean
 }>()
 
 const emit = defineEmits<{
@@ -20,7 +21,7 @@ const isExpired = computed(
   () => props.approval.status === 'EXPIRED' || expiresAt.value.getTime() <= currentTime.value,
 )
 const canDecide = computed(
-  () => props.approval.status === 'PENDING' && !isExpired.value && !props.busy,
+  () => props.approval.status === 'PENDING' && !isExpired.value && !props.busy && !props.readonly,
 )
 const statusText = computed(() => ({
   PENDING: isExpired.value ? '已过期' : '等待审批',
@@ -91,6 +92,13 @@ onBeforeUnmount(() => {
       :closable="false"
     />
     <el-alert
+      v-else-if="approval.status === 'PENDING' && readonly"
+      type="info"
+      title="你当前是 VIEWER，可以查看审批详情，但不能批准或拒绝。"
+      show-icon
+      :closable="false"
+    />
+    <el-alert
       v-else-if="approval.status === 'APPROVED'"
       type="success"
       title="审批已批准；待办只会由服务端按幂等规则创建。"
@@ -105,7 +113,7 @@ onBeforeUnmount(() => {
       :closable="false"
     />
 
-    <template v-if="approval.status === 'PENDING' && !isExpired">
+    <template v-if="approval.status === 'PENDING' && !isExpired && !readonly">
       <el-input
         v-model="comment"
         type="textarea"

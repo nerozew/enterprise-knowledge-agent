@@ -6,7 +6,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-AGENT_GRAPH_VERSION: Final = "p8-agent-mvp-v1-b1"
+AGENT_GRAPH_VERSION: Final = "p8-agent-mvp-v1-b7"
 
 RouteName = Literal[
     "DIRECT_ANSWER",
@@ -145,7 +145,7 @@ class AgentState(StrictModel):
     conversation_id: UUID
     run_id: UUID
     actor_id: UUID
-    graph_version: Literal["p8-agent-mvp-v1-b1"] = AGENT_GRAPH_VERSION
+    graph_version: Literal["p8-agent-mvp-v1-b7"] = AGENT_GRAPH_VERSION
     route: RouteDecision | None = None
     pending_tool_call: ToolProposal | None = None
     approval_id: UUID | None = None

@@ -60,6 +60,8 @@ async def health_ready(request: Request) -> JSONResponse:
     try:
         async with engine.connect() as connection:
             await connection.execute(text("SELECT 1"))
+            if settings.app_env.casefold() not in {"test", "testing"}:
+                await connection.execute(text("SELECT 1 FROM agent_run_dispatches LIMIT 1"))
         return JSONResponse({"status": "ready"})
     except Exception:
         return JSONResponse(
@@ -80,5 +82,15 @@ async def health_capabilities() -> dict:
     return {
         "status": "ok",
         "database": {"configured": True, "critical": True},
+        "agent_worker": {
+            "deployment": "separate_process",
+            "poll_seconds": settings.agent_dispatch_poll_seconds,
+            "lease_seconds": settings.agent_dispatch_lease_seconds,
+            "renew_seconds": settings.agent_dispatch_renew_seconds,
+            "max_attempts": settings.agent_dispatch_max_attempts,
+            "redis_wakeup_configured": bool(settings.redis_url),
+            "redis_wakeup_enabled": False,
+            "mysql_polling_fallback": True,
+        },
         "optional": await knowledge_capabilities(settings),
     }
