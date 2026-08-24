@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from functools import lru_cache
 from typing import Literal
+from uuid import UUID
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -38,6 +39,12 @@ class Settings(BaseSettings):
 
     mcp_user_id: str | None = None
     mcp_local_token: str | None = None
+    mcp_p9_enabled: bool = False
+    mcp_p9_protocol_version: Literal["2025-11-25"] = "2025-11-25"
+    mcp_p9_http_mount_path: str = "/api/v1/workspaces/{workspace_id}"
+    mcp_p9_stdio_actor_id: UUID | None = None
+    mcp_p9_stdio_workspace_id: UUID | None = None
+    mcp_p9_stdio_credential: SecretStr | None = Field(default=None, min_length=32)
 
     redis_url: str | None = None
     minio_endpoint: str | None = None
@@ -100,10 +107,31 @@ class Settings(BaseSettings):
             raise ValueError("RAG_RERANKER_ENDPOINT must be a relative URL path")
         return endpoint
 
+    @field_validator("mcp_p9_http_mount_path")
+    @classmethod
+    def require_workspace_scoped_mcp_mount(cls, value: str) -> str:
+        path = value.strip()
+        if (
+            not path.startswith("/")
+            or path.endswith("/")
+            or path.count("{workspace_id}") != 1
+            or "//" in path
+            or ".." in path
+            or "://" in path
+        ):
+            raise ValueError(
+                "MCP_P9_HTTP_MOUNT_PATH must be an absolute workspace-scoped path"
+            )
+        return path
+
     @model_validator(mode="after")
     def reject_unsafe_jwt_secret(self) -> Settings:
         if self.agent_dispatch_renew_seconds >= self.agent_dispatch_lease_seconds:
             raise ValueError("AGENT_DISPATCH_RENEW_SECONDS must be lower than lease seconds")
+        if self.app_env.casefold() in {"prod", "production"} and self.mcp_p9_enabled:
+            raise ValueError(
+                "MCP_P9_ENABLED cannot be enabled in production before B2 authentication"
+            )
         if (
             self.rag_reranker_profile == "ALIBABA_QWEN3"
             and self.rag_reranker_model
