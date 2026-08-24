@@ -1,0 +1,12 @@
+{
+  "case_id": "markdown-regression",
+  "file": "markdown-regression.md",
+  "format": "markdown",
+  "ocr_mode": "OFF",
+  "expect": "success",
+  "phrases": [
+    "只有已发布版本"
+  ],
+  "sha256": "c3f54d860f5ef8ee0f0fd0297796ba232d8e3ac0e604abdd21f68a8a95222e77",
+  "license": "project-authored-test-fixture"
+}

@@ -8,7 +8,8 @@ from pydantic import Field, model_validator
 
 from app.schemas.common import APIModel, Page
 
-DocumentFormat = Literal["PDF", "DOCX", "MARKDOWN", "TXT"]
+DocumentFormat = Literal["PDF", "DOCX", "PPTX", "MARKDOWN", "TXT"]
+OCRMode = Literal["AUTO", "FORCE", "OFF"]
 RetrievalMode = Literal["DENSE", "SPARSE", "HYBRID"]
 
 
@@ -44,8 +45,21 @@ class DocumentVersionSummary(APIModel):
     parser_profile: str
     chunk_profile: str
     index_profile: str
+    structure_schema_version: int = Field(ge=1)
+    layout_profile: str | None = None
+    ocr_profile: str | None = None
+    page_count: int | None = Field(default=None, ge=0)
+    slide_count: int | None = Field(default=None, ge=0)
+    ocr_page_count: int = Field(default=0, ge=0)
+    parse_warnings: list[dict[str, object]] = Field(default_factory=list)
     created_at: datetime
     published_at: datetime | None
+
+
+class IngestionPages(APIModel):
+    total: int = Field(default=0, ge=0)
+    ocr_required: int = Field(default=0, ge=0)
+    ocr_completed: int = Field(default=0, ge=0)
 
 
 class IngestionJobSummary(APIModel):
@@ -66,6 +80,9 @@ class IngestionJobSummary(APIModel):
         "CANCELLED",
     ]
     stage: str
+    stage_detail: str | None = None
+    pages: IngestionPages = Field(default_factory=IngestionPages)
+    warnings: list[dict[str, object]] = Field(default_factory=list)
     progress: int = Field(ge=0, le=100)
     attempt_count: int = Field(ge=0)
     retryable: bool
@@ -132,6 +149,26 @@ class ScoreDetails(APIModel):
     final: ScoreStage
 
 
+class SourceSpanSummary(APIModel):
+    source_span_id: str
+    page_no: int | None = Field(default=None, ge=1)
+    slide_no: int | None = Field(default=None, ge=1)
+    bbox: dict[str, float] | None = None
+    excerpt: str
+    excerpt_sha256: str
+
+
+class SourceSpanResolved(SourceSpanSummary):
+    workspace_id: UUID
+    document_id: UUID
+    document_version_id: UUID
+    chunk_id: UUID
+    block_ref: str
+    block_char_start: int = Field(ge=0)
+    block_char_end: int = Field(ge=1)
+    source_sha256: str
+
+
 class SearchHit(APIModel):
     chunk_id: UUID
     document_id: UUID
@@ -141,6 +178,7 @@ class SearchHit(APIModel):
     heading_path: list[str]
     quote: str
     source_span_id: str
+    source_spans: list[SourceSpanSummary] = Field(default_factory=list)
     score: float
     scores: ScoreBreakdown
     score_details: ScoreDetails
@@ -149,7 +187,7 @@ class SearchHit(APIModel):
 
 class SearchFilters(APIModel):
     document_ids: list[UUID] = Field(default_factory=list, max_length=100)
-    source_formats: list[DocumentFormat] = Field(default_factory=list, max_length=4)
+    source_formats: list[DocumentFormat] = Field(default_factory=list, max_length=5)
     published_after: datetime | None = None
     published_before: datetime | None = None
 

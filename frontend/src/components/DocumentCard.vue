@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type {
+  DiagnosticWarning,
   DocumentSummary,
   DocumentVersionSummary,
   IngestionJobSummary,
@@ -42,6 +43,45 @@ const sizeLabel = computed(() => {
   if (bytes === undefined) return ''
   return bytes < 1024 * 1024 ? `${Math.ceil(bytes / 1024)} KiB` : `${(bytes / 1024 / 1024).toFixed(1)} MiB`
 })
+const pageProgressLabel = computed(() => {
+  const pages = props.job?.pages
+  if (!pages) return ''
+  if (pages.ocr_required > 0) {
+    return `${pages.total} 页 · OCR ${pages.ocr_completed}/${pages.ocr_required}`
+  }
+  return `${pages.total} 页 · 无需 OCR`
+})
+const structureCountLabel = computed(() => {
+  if (props.version?.slide_count !== undefined && props.version.slide_count !== null) {
+    return `${props.version.slide_count} 张幻灯片`
+  }
+  if (props.version?.page_count !== undefined && props.version.page_count !== null) {
+    return `${props.version.page_count} 页`
+  }
+  return ''
+})
+const diagnosticWarnings = computed(() => [
+  ...(props.job?.warnings ?? []),
+  ...(props.version?.parse_warnings ?? []),
+].filter((warning, index, all) => (
+  all.findIndex((candidate) => JSON.stringify(candidate) === JSON.stringify(warning)) === index
+)))
+
+function warningLabel(warning: DiagnosticWarning): string {
+  const message = warning.message
+  const code = warning.code
+  const locator = typeof warning.page_no === 'number'
+    ? `第 ${warning.page_no} 页`
+    : typeof warning.slide_no === 'number'
+      ? `第 ${warning.slide_no} 张幻灯片`
+      : ''
+  const summary = typeof message === 'string' && message.trim()
+    ? message.trim()
+    : typeof code === 'string' && code.trim()
+      ? code.trim()
+      : '解析器返回了诊断信息'
+  return locator ? `${locator}：${summary}` : summary
+}
 </script>
 
 <template>
@@ -57,7 +97,22 @@ const sizeLabel = computed(() => {
       <span v-if="version">版本 {{ version.id.slice(0, 8) }}</span>
       <span v-if="version?.published_at">发布于 {{ new Date(version.published_at).toLocaleString() }}</span>
       <span v-if="sizeLabel">{{ sizeLabel }}</span>
+      <span v-if="structureCountLabel">{{ structureCountLabel }}</span>
     </p>
+    <div v-if="version?.layout_profile || version?.ocr_profile" class="parser-badges" aria-label="解析方式">
+      <el-tag v-if="version.layout_profile" size="small" effect="plain">版面解析</el-tag>
+      <el-tag
+        v-if="(version.ocr_page_count ?? 0) > 0"
+        size="small"
+        type="warning"
+        effect="plain"
+      >
+        OCR {{ version.ocr_page_count }} 页
+      </el-tag>
+      <el-tag v-else-if="version.layout_profile" size="small" type="success" effect="plain">
+        原生文本
+      </el-tag>
+    </div>
 
     <template v-if="job">
       <el-progress
@@ -65,6 +120,10 @@ const sizeLabel = computed(() => {
         :status="progressStatus || undefined"
         :stroke-width="8"
       />
+      <p v-if="job.stage_detail || pageProgressLabel" class="job-detail">
+        <span v-if="job.stage_detail">{{ job.stage_detail }}</span>
+        <span v-if="pageProgressLabel">{{ pageProgressLabel }}</span>
+      </p>
       <p v-if="job.error_message" class="job-error" role="alert">{{ job.error_message }}</p>
       <div v-if="!readonly" class="document-actions">
         <el-button
@@ -89,5 +148,13 @@ const sizeLabel = computed(() => {
     <p v-else-if="version?.status === 'PUBLISHED'" class="published-note">
       已固定到不可变发布版本，可用于检索与引用。
     </p>
+    <details v-if="diagnosticWarnings.length" class="parse-warnings">
+      <summary>解析警告（{{ diagnosticWarnings.length }}）</summary>
+      <ul>
+        <li v-for="(warning, index) in diagnosticWarnings" :key="`${index}-${warningLabel(warning)}`">
+          {{ warningLabel(warning) }}
+        </li>
+      </ul>
+    </details>
   </article>
 </template>

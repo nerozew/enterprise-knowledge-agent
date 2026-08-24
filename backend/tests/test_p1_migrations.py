@@ -59,7 +59,7 @@ def test_p2_p4_sqlite_empty_database_upgrade_and_downgrade(tmp_path):
     _run_alembic(url, "upgrade", "head")
     with sqlite3.connect(database) as connection:
         revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
-        assert revision == ("0011_p8_agent_dispatch",)
+        assert revision == ("0012_p31_unstructured_ingestion",)
         for table_name in (
             "documents",
             "document_versions",
@@ -68,6 +68,8 @@ def test_p2_p4_sqlite_empty_database_upgrade_and_downgrade(tmp_path):
             "document_chunks",
             "outbox_events",
             "compensation_tasks",
+            "chunk_source_spans",
+            "document_version_artifacts",
             "conversations",
             "messages",
             "agent_runs",
@@ -329,7 +331,7 @@ def test_p1_database_upgrades_forward_to_p2_p4_without_losing_records(tmp_path):
     _run_alembic(url, "upgrade", "head")
     with sqlite3.connect(database) as connection:
         revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
-        assert revision == ("0011_p8_agent_dispatch",)
+        assert revision == ("0012_p31_unstructured_ingestion",)
         columns = {row[1] for row in connection.execute("PRAGMA table_info(idempotency_records)")}
         assert {
             "status",

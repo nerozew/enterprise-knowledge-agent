@@ -1,0 +1,15 @@
+{
+  "case_id": "mixed-pdf",
+  "file": "mixed-native-scanned.pdf",
+  "format": "pdf",
+  "ocr_mode": "AUTO",
+  "expect": "success",
+  "page_count": 2,
+  "ocr_page_count": 1,
+  "phrases": [
+    "Production Access Policy",
+    "普通生产权限"
+  ],
+  "sha256": "0d2a4ce4043420990b4a7ac83dfcbacb02d4dcb4789b3206ffb9e4b62827f4c7",
+  "license": "project-authored-test-fixture"
+}

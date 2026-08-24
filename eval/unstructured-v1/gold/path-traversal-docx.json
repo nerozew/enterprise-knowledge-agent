@@ -1,0 +1,9 @@
+{
+  "case_id": "path-traversal-docx",
+  "file": "negative-path-traversal.docx",
+  "format": "docx",
+  "ocr_mode": "OFF",
+  "expect": "failure",
+  "sha256": "0b1afaa9b34f2ecdcebd15716c56787de66d818f001a03511866aa14239442a9",
+  "license": "project-authored-test-fixture"
+}

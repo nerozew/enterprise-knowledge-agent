@@ -12,10 +12,12 @@ from app.models.agent import (
 )
 from app.models.entities import AiGeneration, Inspiration, InspirationTag, Tag, User
 from app.models.knowledge import (
+    ChunkSourceSpan,
     CompensationTask,
     Document,
     DocumentChunk,
     DocumentVersion,
+    DocumentVersionArtifact,
     IngestionJob,
     IngestionJobAttempt,
     OutboxEvent,
@@ -32,9 +34,11 @@ __all__ = [
     "AiGeneration",
     "ApprovalRequest",
     "CompensationTask",
+    "ChunkSourceSpan",
     "Conversation",
     "Document",
     "DocumentChunk",
+    "DocumentVersionArtifact",
     "DocumentVersion",
     "IngestionJob",
     "IngestionJobAttempt",

@@ -1,0 +1,12 @@
+{
+  "case_id": "scanned-zh",
+  "file": "scanned-zh.pdf",
+  "format": "pdf",
+  "ocr_mode": "FORCE",
+  "expect": "success",
+  "page_count": 1,
+  "ocr_page_count": 1,
+  "reference_text": "扫描件安全制度普通生产权限最长30天",
+  "sha256": "183af3fabd89df0516e3383f962058ca5958b94527afdbb9721ebe360d1cc07e",
+  "license": "project-authored-test-fixture"
+}

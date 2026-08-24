@@ -8,6 +8,7 @@ from fastapi import (
     File,
     Form,
     Header,
+    Path,
     Query,
     Request,
     UploadFile,
@@ -23,8 +24,10 @@ from app.schemas.knowledge import (
     DocumentVersionSummary,
     IngestionJobSummary,
     JobVersionRequest,
+    OCRMode,
     SearchRequest,
     SearchResponse,
+    SourceSpanResolved,
     UploadAccepted,
 )
 from app.services.knowledge import (
@@ -53,6 +56,7 @@ async def upload_document(
     duplicate_policy: Annotated[
         Literal["REUSE_EXISTING", "CREATE_NEW"], Form()
     ] = "REUSE_EXISTING",
+    ocr_mode: Annotated[OCRMode | None, Form()] = None,
     idempotency_key: Annotated[
         str | None, Header(alias="Idempotency-Key")
     ] = None,
@@ -68,6 +72,7 @@ async def upload_document(
         title=title,
         duplicate_policy=duplicate_policy,
         idempotency_key=idempotency_key,
+        ocr_mode=ocr_mode,
     )
     return UploadAccepted(
         document=DocumentSummary.model_validate(document_snapshot(document)),
@@ -93,6 +98,7 @@ async def upload_document_version(
     duplicate_policy: Annotated[
         Literal["REUSE_EXISTING", "CREATE_NEW"], Form()
     ] = "CREATE_NEW",
+    ocr_mode: Annotated[OCRMode | None, Form()] = None,
     idempotency_key: Annotated[
         str | None, Header(alias="Idempotency-Key")
     ] = None,
@@ -108,6 +114,7 @@ async def upload_document_version(
         title=None,
         duplicate_policy=duplicate_policy,
         idempotency_key=idempotency_key,
+        ocr_mode=ocr_mode,
         document_id=document_id,
     )
     return UploadAccepted(
@@ -243,6 +250,25 @@ async def list_document_versions(
         DocumentVersionSummary.model_validate(version_snapshot(version))
         for version in versions
     ]
+
+
+@router.get(
+    "/{workspace_id}/documents/{document_id}/versions/{version_id}/"
+    "source-spans/{source_span_id}",
+    response_model=SourceSpanResolved,
+)
+async def resolve_document_source_span(
+    workspace_id: UUID,
+    document_id: UUID,
+    version_id: UUID,
+    source_span_id: Annotated[str, Path(min_length=64, max_length=64)],
+    session: SessionDep,
+    settings: SettingsDep,
+    user: CurrentUser,
+) -> SourceSpanResolved:
+    return await KnowledgeService(
+        session, user.id, workspace_id, settings
+    ).resolve_source_span(document_id, version_id, source_span_id)
 
 
 @router.get(

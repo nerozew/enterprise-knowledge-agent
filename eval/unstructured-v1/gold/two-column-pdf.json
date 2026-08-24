@@ -1,0 +1,14 @@
+{
+  "case_id": "two-column-pdf",
+  "file": "two-column-incident.pdf",
+  "format": "pdf",
+  "ocr_mode": "OFF",
+  "expect": "success",
+  "page_count": 1,
+  "phrases": [
+    "SEV-1 response",
+    "blameless review"
+  ],
+  "sha256": "1e7bfd7a05764180a2f4ec767f30ef980200da0da0be33acdc3bc676f0772b14",
+  "license": "project-authored-test-fixture"
+}

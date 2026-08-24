@@ -17,5 +17,9 @@ class ProviderUnavailableError(KnowledgeError):
     """A configured provider cannot serve the requested capability."""
 
 
+class OCRProviderUnavailableError(ProviderUnavailableError):
+    """The configured OCR engine or its inference runtime is temporarily unavailable."""
+
+
 class AdapterUnavailableError(KnowledgeError):
     """An external storage adapter cannot be constructed or reached."""

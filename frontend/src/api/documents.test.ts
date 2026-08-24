@@ -65,6 +65,7 @@ describe('知识文档 API', () => {
         file: new File(['制度'], 'policy.txt', { type: 'text/plain' }),
         title: '制度',
         duplicate_policy: 'REUSE_EXISTING',
+        ocr_mode: 'AUTO',
       },
       'intent-key',
       signal,
@@ -75,7 +76,44 @@ describe('知识文档 API', () => {
     expect(url).toBe('/workspaces/workspace-1/documents')
     expect(form).toBeInstanceOf(FormData)
     expect((form as FormData).get('duplicate_policy')).toBe('REUSE_EXISTING')
+    expect((form as FormData).get('ocr_mode')).toBe('AUTO')
+    expect((form as FormData).has('sync')).toBe(false)
     expect(config).toMatchObject({ headers: { 'Idempotency-Key': 'intent-key' }, signal })
+  })
+
+  it('按固定 Workspace、文档、版本与 Span 解析来源定位', async () => {
+    const response = {
+      workspace_id: 'workspace-1',
+      document_id: 'doc-1',
+      document_version_id: 'version-1',
+      chunk_id: 'chunk-1',
+      source_span_id: 'span-1',
+      block_ref: 'slide-2:block-3',
+      page_no: null,
+      slide_no: 2,
+      bbox: { left: 0.1, top: 0.2, right: 0.8, bottom: 0.4 },
+      block_char_start: 0,
+      block_char_end: 12,
+      excerpt: '幻灯片中的原文',
+      excerpt_sha256: 'a'.repeat(64),
+      source_sha256: 'b'.repeat(64),
+    }
+    const get = vi.spyOn(apiClient, 'get').mockResolvedValue({ data: response })
+    const signal = new AbortController().signal
+
+    const locator = await documentApi.sourceSpan(
+      'workspace-1',
+      'doc-1',
+      'version-1',
+      'span-1',
+      signal,
+    )
+
+    expect(get).toHaveBeenCalledWith(
+      '/workspaces/workspace-1/documents/doc-1/versions/version-1/source-spans/span-1',
+      { signal },
+    )
+    expect(locator).toMatchObject({ slide_no: 2, excerpt: '幻灯片中的原文' })
   })
 
   it('取消摄取使用 JSON version、幂等键与 If-Match', async () => {

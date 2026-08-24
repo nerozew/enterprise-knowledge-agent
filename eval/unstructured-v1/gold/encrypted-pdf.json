@@ -1,0 +1,9 @@
+{
+  "case_id": "encrypted-pdf",
+  "file": "negative-encrypted.pdf",
+  "format": "pdf",
+  "ocr_mode": "OFF",
+  "expect": "failure",
+  "sha256": "390e7c26386b3f6a5c81339429de6839fb0d951a9921d46dd809fe2c27e307f9",
+  "license": "project-authored-test-fixture"
+}

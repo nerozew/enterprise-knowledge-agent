@@ -1,0 +1,18 @@
+{
+  "case_id": "docx-structure",
+  "file": "structured-policy.docx",
+  "format": "docx",
+  "ocr_mode": "OFF",
+  "expect": "success",
+  "phrases": [
+    "差旅与费用报销制度",
+    "800 元/晚"
+  ],
+  "required_block_kinds": [
+    "heading",
+    "list",
+    "table"
+  ],
+  "sha256": "47f57e1956416448d1d577d82ec097f3ba1c5980d48fd89060486c5ae113e575",
+  "license": "project-authored-test-fixture"
+}

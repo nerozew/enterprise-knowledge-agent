@@ -1,6 +1,7 @@
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { createMemoryHistory, createRouter } from 'vue-router'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+import { documentApi } from '@/api/documents'
 import type {
   KnowledgeHit,
   KnowledgeScoreDetails,
@@ -86,12 +87,19 @@ async function mountCard(
     global: {
       plugins: [router],
       stubs: {
+        ElAlert: { props: ['title'], template: '<aside>{{ title }}<slot /></aside>' },
+        ElButton: { template: '<button><slot /></button>' },
+        ElDialog: {
+          props: ['modelValue', 'title'],
+          template: '<section v-if="modelValue" class="dialog-stub"><h2>{{ title }}</h2><slot /></section>',
+        },
         ElTooltip: {
           props: ['content'],
           template: '<span class="tooltip-stub" :data-content="content"><slot /></span>',
         },
         ElTag: { template: '<span class="tag-stub"><slot /></span>' },
       },
+      directives: { loading: () => undefined },
     },
   })
 }
@@ -156,11 +164,76 @@ describe('来源与候选片段卡片', () => {
   })
 
   it('旧响应只显示旧版综合排序分，不展示 legacy 阶段猜测', async () => {
+    const sourceSpan = vi.spyOn(documentApi, 'sourceSpan')
     const wrapper = await mountCard(hit())
 
     expect(wrapper.text()).toContain('旧版综合排序分')
+    expect(wrapper.text()).toContain('Span span-1234567 · 旧版定位')
     expect(wrapper.text()).not.toContain('查看排序分明细')
     expect(wrapper.text()).not.toContain('Dense')
     expect(wrapper.text()).not.toContain('Fusion')
+    expect(wrapper.findAll('button').some((button) => button.text().includes('Span'))).toBe(false)
+    expect(sourceSpan).not.toHaveBeenCalled()
+  })
+
+  it('展示多段页/幻灯片定位并按需加载固定版本原文诊断', async () => {
+    const cardHit = hit(scoreDetails())
+    cardHit.page = null
+    cardHit.source_span_id = 'legacy-span-not-indexed'
+    cardHit.source_spans = [
+      {
+        source_span_id: 'span-v2-primary-123456',
+        page_no: null,
+        slide_no: 2,
+        bbox: { left: 0.1, top: 0.2, right: 0.8, bottom: 0.4 },
+        excerpt: '第二张幻灯片的原文',
+        excerpt_sha256: 'a'.repeat(64),
+      },
+      {
+        source_span_id: 'span-second-987654',
+        page_no: null,
+        slide_no: 3,
+        bbox: null,
+        excerpt: '第三张幻灯片的补充原文',
+        excerpt_sha256: 'b'.repeat(64),
+      },
+    ]
+    const sourceSpan = vi.spyOn(documentApi, 'sourceSpan').mockResolvedValue({
+      workspace_id: 'workspace-1',
+      document_id: 'doc-1',
+      document_version_id: 'version-123456',
+      chunk_id: 'chunk-1',
+      source_span_id: 'span-v2-primary-123456',
+      block_ref: 'slide-2:block-1',
+      page_no: null,
+      slide_no: 2,
+      bbox: { left: 0.1, top: 0.2, right: 0.8, bottom: 0.4 },
+      block_char_start: 0,
+      block_char_end: 10,
+      excerpt: '第二张幻灯片的原文',
+      excerpt_sha256: 'a'.repeat(64),
+      source_sha256: 'c'.repeat(64),
+    })
+    const wrapper = await mountCard(cardHit, scoring(1))
+
+    expect(wrapper.text()).toContain('第 2 张幻灯片')
+    expect(wrapper.text()).toContain('查看 2 个来源定位')
+    const spanButton = wrapper.findAll('button')
+      .find((button) => button.text().includes('span-v2-prim'))
+    await spanButton?.trigger('click')
+    await flushPromises()
+
+    expect(sourceSpan).toHaveBeenCalledWith(
+      'workspace-1',
+      'doc-1',
+      'version-123456',
+      'span-v2-primary-123456',
+      expect.any(AbortSignal),
+    )
+    expect(wrapper.find('.dialog-stub').text()).toContain('slide-2:block-1')
+    expect(wrapper.find('.dialog-stub').text()).toContain('第二张幻灯片的原文')
+    expect(wrapper.find('a').attributes('href')).toContain('slide=2')
+    expect(wrapper.find('a').attributes('href')).toContain('span=span-v2-primary-123456')
+    expect(wrapper.find('a').attributes('href')).not.toContain('legacy-span-not-indexed')
   })
 })

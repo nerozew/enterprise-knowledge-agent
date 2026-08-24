@@ -1,0 +1,12 @@
+{
+  "case_id": "text-regression",
+  "file": "text-regression.txt",
+  "format": "txt",
+  "ocr_mode": "OFF",
+  "expect": "success",
+  "phrases": [
+    "30 天内恢复"
+  ],
+  "sha256": "995c684c8bf381f35a8c04be2d946bd4cdc59167016a4bd1eec29b98062a3aa1",
+  "license": "project-authored-test-fixture"
+}

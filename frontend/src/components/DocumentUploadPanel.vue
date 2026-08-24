@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { ElMessage, type UploadFile, type UploadFiles } from 'element-plus'
-import type { DocumentUploadInput, DuplicatePolicy } from '@/api/types'
+import type { DocumentUploadInput, DuplicatePolicy, OcrMode } from '@/api/types'
 
 const props = defineProps<{
   busy: boolean
@@ -13,14 +13,15 @@ const emit = defineEmits<{
 const file = ref<File | null>(null)
 const title = ref('')
 const duplicatePolicy = ref<DuplicatePolicy>('REUSE_EXISTING')
+const ocrMode = ref<OcrMode>('AUTO')
 const fileList = ref<UploadFile[]>([])
 
 function onChange(uploadFile: UploadFile, uploadFiles: UploadFiles) {
   const raw = uploadFile.raw
   if (!raw) return
   const extension = raw.name.split('.').pop()?.toLowerCase()
-  if (!extension || !['pdf', 'docx', 'md', 'markdown', 'txt'].includes(extension)) {
-    ElMessage.error('仅支持 PDF、DOCX、Markdown 和 TXT 文件')
+  if (!extension || !['pdf', 'docx', 'pptx', 'md', 'markdown', 'txt'].includes(extension)) {
+    ElMessage.error('仅支持 PDF、DOCX、PPTX、Markdown 和 TXT 文件')
     file.value = null
     fileList.value = []
     return
@@ -48,6 +49,7 @@ function submit() {
     file: file.value,
     ...(title.value.trim() ? { title: title.value.trim() } : {}),
     duplicate_policy: duplicatePolicy.value,
+    ocr_mode: ocrMode.value,
   })
 }
 
@@ -55,6 +57,7 @@ function reset() {
   file.value = null
   title.value = ''
   duplicatePolicy.value = 'REUSE_EXISTING'
+  ocrMode.value = 'AUTO'
   fileList.value = []
 }
 
@@ -67,7 +70,7 @@ defineExpose({ reset })
       <div>
         <p class="eyebrow">发布到知识库</p>
         <h1 id="upload-title">让文档成为可追溯的答案依据</h1>
-        <p>上传后会解析结构、生成父子 Chunk，并建立 Dense 与 BM25 索引。只有成功发布的不可变版本可被检索。</p>
+        <p>上传后会解析版面、按需识别扫描页、生成父子 Chunk，并建立 Dense 与 BM25 索引。只有成功发布的不可变版本可被检索。</p>
       </div>
     </div>
     <div class="upload-grid">
@@ -77,14 +80,14 @@ defineExpose({ reset })
         drag
         :auto-upload="false"
         :limit="1"
-        accept=".pdf,.docx,.md,.markdown,.txt"
+        accept=".pdf,.docx,.pptx,.md,.markdown,.txt"
         :on-change="onChange"
         :on-remove="remove"
       >
         <div class="upload-glyph" aria-hidden="true">↥</div>
         <div class="el-upload__text">拖入文件，或 <em>选择文件</em></div>
         <template #tip>
-          <div class="el-upload__tip">PDF / DOCX 最大 50 MiB；Markdown / TXT 最大 10 MiB</div>
+          <div class="el-upload__tip">PDF / DOCX / PPTX 最大 50 MiB；Markdown / TXT 最大 10 MiB</div>
         </template>
       </el-upload>
       <div class="upload-fields">
@@ -95,6 +98,13 @@ defineExpose({ reset })
           <el-option label="复用已存在版本（推荐）" value="REUSE_EXISTING" />
           <el-option label="明确创建新版本" value="CREATE_NEW" />
         </el-select>
+        <label for="ocr-mode">扫描件识别</label>
+        <el-select id="ocr-mode" v-model="ocrMode">
+          <el-option label="自动识别扫描页（推荐）" value="AUTO" />
+          <el-option label="强制逐页 OCR" value="FORCE" />
+          <el-option label="关闭 OCR" value="OFF" />
+        </el-select>
+        <small class="field-hint">自动模式只识别原生文本不足的 PDF 页面；DOCX、PPTX 当前优先解析原生结构。</small>
         <el-button type="primary" size="large" :disabled="!file" :loading="busy" @click="submit">
           上传并构建索引
         </el-button>

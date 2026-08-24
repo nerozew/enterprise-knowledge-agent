@@ -141,6 +141,19 @@ class DocumentVersion(Base):
     index_profile: Mapped[str] = mapped_column(
         String(128), default="fixture-hash-v1", server_default="fixture-hash-v1"
     )
+    structure_schema_version: Mapped[int] = mapped_column(
+        Integer, default=1, server_default="1"
+    )
+    layout_profile: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    ocr_profile: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    derived_manifest_key: Mapped[str | None] = mapped_column(String(768), nullable=True)
+    derived_manifest_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    page_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    slide_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ocr_page_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    parse_warnings_json: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON, default=list, nullable=False
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     published_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
@@ -184,6 +197,11 @@ class IngestionJob(Base):
     attempt_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
     error_message: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    stage_detail: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    pages_json: Mapped[dict[str, int]] = mapped_column(JSON, default=dict, nullable=False)
+    warnings_json: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON, default=list, nullable=False
+    )
     lease_owner: Mapped[str | None] = mapped_column(String(128), nullable=True)
     lease_expires_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
@@ -268,6 +286,104 @@ class DocumentChunk(Base):
     content_sha256: Mapped[str] = mapped_column(String(64))
     content: Mapped[str] = mapped_column(Text)
     indexed: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class ChunkSourceSpan(Base):
+    __tablename__ = "chunk_source_spans"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["workspace_id", "document_id", "document_version_id"],
+            [
+                "document_versions.workspace_id",
+                "document_versions.document_id",
+                "document_versions.id",
+            ],
+            ondelete="CASCADE",
+            name="fk_chunk_spans_workspace_document_version",
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "document_version_id", "chunk_id", "primary_source_span_id"],
+            [
+                "document_chunks.workspace_id",
+                "document_chunks.document_version_id",
+                "document_chunks.id",
+                "document_chunks.source_span_id",
+            ],
+            ondelete="CASCADE",
+            name="fk_chunk_spans_workspace_chunk",
+        ),
+        UniqueConstraint(
+            "workspace_id",
+            "document_version_id",
+            "chunk_id",
+            "source_span_id",
+            name="uq_chunk_spans_workspace_version_chunk_span",
+        ),
+        UniqueConstraint(
+            "workspace_id", "chunk_id", "span_ordinal", name="uq_chunk_spans_chunk_order"
+        ),
+        Index(
+            "ix_chunk_spans_workspace_version_chunk",
+            "workspace_id",
+            "document_version_id",
+            "chunk_id",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column()
+    document_id: Mapped[UUID] = mapped_column()
+    document_version_id: Mapped[UUID] = mapped_column()
+    chunk_id: Mapped[UUID] = mapped_column()
+    primary_source_span_id: Mapped[str] = mapped_column(String(64))
+    source_span_id: Mapped[str] = mapped_column(String(64))
+    span_ordinal: Mapped[int] = mapped_column(Integer)
+    block_ref: Mapped[str] = mapped_column(String(64))
+    page_no: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    slide_no: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    bbox_json: Mapped[dict[str, float] | None] = mapped_column(JSON, nullable=True)
+    block_char_start: Mapped[int] = mapped_column(Integer)
+    block_char_end: Mapped[int] = mapped_column(Integer)
+    excerpt_text: Mapped[str] = mapped_column(Text)
+    excerpt_sha256: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class DocumentVersionArtifact(Base):
+    __tablename__ = "document_version_artifacts"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["workspace_id", "document_version_id"],
+            ["document_versions.workspace_id", "document_versions.id"],
+            ondelete="CASCADE",
+            name="fk_version_artifacts_workspace_version",
+        ),
+        UniqueConstraint(
+            "workspace_id",
+            "document_version_id",
+            "artifact_type",
+            "locator_key",
+            name="uq_version_artifacts_locator",
+        ),
+        Index(
+            "ix_version_artifacts_workspace_version",
+            "workspace_id",
+            "document_version_id",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column()
+    document_version_id: Mapped[UUID] = mapped_column()
+    artifact_type: Mapped[str] = mapped_column(String(32))
+    locator_key: Mapped[str] = mapped_column(String(80), default="document")
+    object_key: Mapped[str] = mapped_column(String(768))
+    sha256: Mapped[str] = mapped_column(String(64))
+    byte_size: Mapped[int] = mapped_column(BigInteger)
+    schema_version: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    rebuildable: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
+    status: Mapped[str] = mapped_column(String(16), default="READY", server_default="READY")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 

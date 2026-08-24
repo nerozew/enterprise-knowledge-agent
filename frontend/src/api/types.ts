@@ -225,8 +225,9 @@ export interface AuditLogPage {
 }
 
 export type DocumentStatus = 'ACTIVE' | 'DELETED'
-export type DocumentFormat = 'PDF' | 'DOCX' | 'MARKDOWN' | 'TXT'
+export type DocumentFormat = 'PDF' | 'DOCX' | 'PPTX' | 'MARKDOWN' | 'TXT'
 export type DocumentVersionStatus = 'PUBLISHING' | 'PUBLISHED' | 'SUPERSEDED' | 'FAILED'
+export type OcrMode = 'AUTO' | 'FORCE' | 'OFF'
 export type IngestionJobStatus =
   | 'QUEUED'
   | 'PARSING'
@@ -263,9 +264,24 @@ export interface DocumentVersionSummary {
   parser_profile: string
   chunk_profile: string
   index_profile: string
+  structure_schema_version?: number
+  layout_profile?: string | null
+  ocr_profile?: string | null
+  page_count?: number | null
+  slide_count?: number | null
+  ocr_page_count?: number
+  parse_warnings?: DiagnosticWarning[]
   created_at: string
   published_at: string | null
 }
+
+export interface IngestionPageProgress {
+  total: number
+  ocr_required: number
+  ocr_completed: number
+}
+
+export type DiagnosticWarning = Record<string, unknown>
 
 export interface IngestionJobSummary {
   id: string
@@ -274,7 +290,10 @@ export interface IngestionJobSummary {
   document_version_id: string
   status: IngestionJobStatus
   stage: string
+  stage_detail?: string | null
   progress: number
+  pages?: IngestionPageProgress | null
+  warnings?: DiagnosticWarning[]
   attempt_count: number
   retryable: boolean
   error_code?: string
@@ -304,6 +323,7 @@ export interface DocumentUploadInput {
   file: File
   title?: string
   duplicate_policy: DuplicatePolicy
+  ocr_mode: OcrMode
 }
 
 export type RetrievalMode = 'DENSE' | 'SPARSE' | 'HYBRID'
@@ -339,6 +359,32 @@ export interface KnowledgeHitScores {
   sparse?: number
   fusion: number
   rerank?: number
+}
+
+export interface SourceBoundingBox {
+  [coordinate: string]: number
+}
+
+export interface KnowledgeSourceSpan {
+  source_span_id: string
+  page_no: number | null
+  slide_no: number | null
+  bbox: SourceBoundingBox | null
+  excerpt: string
+  excerpt_sha256?: string
+}
+
+export interface SourceSpanLocator extends KnowledgeSourceSpan {
+  workspace_id?: string
+  document_id: string
+  document_version_id: string
+  chunk_id?: string | null
+  span_ordinal?: number
+  block_ref?: string | null
+  block_char_start?: number | null
+  block_char_end?: number | null
+  excerpt_sha256: string
+  source_sha256?: string
 }
 
 export type ScoreAvailability =
@@ -382,6 +428,7 @@ export interface KnowledgeHit {
   heading_path: string[]
   quote: string
   source_span_id: string
+  source_spans?: KnowledgeSourceSpan[]
   score: number
   scores: KnowledgeHitScores
   score_details?: KnowledgeScoreDetails

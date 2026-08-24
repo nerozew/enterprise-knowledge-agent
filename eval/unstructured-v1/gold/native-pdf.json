@@ -1,0 +1,18 @@
+{
+  "case_id": "native-pdf",
+  "file": "native-access.pdf",
+  "format": "pdf",
+  "ocr_mode": "OFF",
+  "expect": "success",
+  "page_count": 1,
+  "phrases": [
+    "production grant",
+    "30 days"
+  ],
+  "required_block_kinds": [
+    "heading",
+    "paragraph"
+  ],
+  "sha256": "b37256c80717a0955702c7fd00de5fbdb38568efb37422f27bcdc1baf431d89c",
+  "license": "project-authored-test-fixture"
+}

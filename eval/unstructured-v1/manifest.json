@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "dataset_version": "unstructured-v1",
+  "language": ["zh-CN", "en"],
+  "created_at": "2026-08-24",
+  "license": "project-authored-test-fixtures",
+  "status": "FROZEN",
+  "allowed_claim": "project-authored-controlled-regression-only",
+  "case_count": 14,
+  "cases_sha256": "197e075a8e7334afa31198b84bd0156a2272f69d7342b45977d3f9549beb0364",
+  "baseline_report": "eval/reports/unstructured-v1/20260824T075149Z",
+  "required_case_groups": [
+    "native_pdf",
+    "two_column_pdf",
+    "table_pdf",
+    "scanned_zh_pdf",
+    "scanned_zh_en_pdf",
+    "mixed_native_scanned_pdf",
+    "docx_structure",
+    "pptx_structure",
+    "markdown_regression",
+    "txt_regression",
+    "unsafe_and_limit_negatives"
+  ],
+  "notes": [
+    "The corpus and gold metadata are project-authored synthetic control fixtures.",
+    "The baseline report executed Docling 2.121, RapidOCR and ONNX Runtime locally on CPU.",
+    "Synthetic clear-scan CER is not a production OCR quality claim.",
+    "External MinIO/Milvus integration and the existing 100-question live RAG regression were unavailable during this run.",
+    "No production or personal documents are included."
+  ]
+}

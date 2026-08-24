@@ -245,6 +245,7 @@ export const useDocumentStore = defineStore('documents', () => {
       type: input.file.type,
       title: input.title?.trim() ?? '',
       duplicate_policy: input.duplicate_policy,
+      ocr_mode: input.ocr_mode,
     }
     try {
       const result = await executeIdempotentIntent(

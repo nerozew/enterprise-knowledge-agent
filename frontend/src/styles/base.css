@@ -145,6 +145,7 @@ a:hover { text-decoration: underline; }
 .upload-fields label { margin-top: 4px; color: var(--muted); font-size: 12px; font-weight: 650; }
 .upload-fields .el-select { width: 100%; }
 .upload-fields .el-button { margin-top: 12px; }
+.field-hint { color: var(--muted); font-size: 11px; line-height: 1.5; }
 .knowledge-message { margin-top: 18px; }
 .knowledge-library { padding-top: 48px; }
 .knowledge-library .timeline-heading h2, .result-summary h2 { margin: 0 0 20px; font-family: Georgia, "Noto Serif SC", serif; font-size: 28px; font-weight: 500; }
@@ -157,9 +158,14 @@ a:hover { text-decoration: underline; }
 .document-format { display: grid; width: 43px; height: 43px; place-items: center; border-radius: 12px; color: var(--green); background: #e9eee7; font-size: 10px; font-weight: 800; }
 .document-card h3 { overflow: hidden; margin: 20px 0 10px; text-overflow: ellipsis; white-space: nowrap; }
 .document-meta { display: flex; min-height: 42px; flex-wrap: wrap; gap: 5px 10px; margin: 0 0 16px; color: var(--muted); font-size: 11px; line-height: 1.45; }
+.parser-badges { display: flex; flex-wrap: wrap; gap: 6px; margin: -8px 0 14px; }
 .document-actions { display: flex; gap: 6px; margin-top: 13px; }
 .job-error { display: -webkit-box; overflow: hidden; margin: 12px 0 0; color: #a35b52; font-size: 12px; line-height: 1.5; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.job-detail { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 10px; margin: 8px 0 0; color: var(--muted); font-size: 11px; }
 .published-note { margin: 17px 0 0; padding: 12px; border-radius: 10px; color: var(--green); background: #eef2eb; font-size: 12px; line-height: 1.5; }
+.parse-warnings { margin-top: 12px; color: #8c672f; font-size: 11px; }
+.parse-warnings summary { cursor: pointer; }
+.parse-warnings ul { margin: 8px 0 0; padding-left: 18px; line-height: 1.55; }
 
 .ask-form { margin-top: 25px; }
 .ask-form .el-textarea__inner { padding: 18px; border: 0; border-radius: 16px; background: #f5f3ed; box-shadow: none; font-size: 16px; line-height: 1.7; }
@@ -200,6 +206,16 @@ a:hover { text-decoration: underline; }
 .citation-card details { color: var(--muted); font-size: 12px; }
 .citation-card details p { white-space: pre-wrap; line-height: 1.7; }
 .citation-card footer { display: flex; justify-content: space-between; margin-top: 15px; color: var(--muted); font-size: 11px; }
+.citation-card footer .el-button { height: auto; padding: 0; font-size: 11px; }
+.source-span-list { margin-top: 12px; padding-top: 10px; border-top: 1px solid #ebe8df; }
+.source-span-list ul { display: grid; gap: 8px; margin: 9px 0 0; padding: 0; list-style: none; }
+.source-span-list li { display: grid; gap: 3px; }
+.source-span-list li > span { display: -webkit-box; overflow: hidden; color: var(--muted); line-height: 1.5; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.source-span-diagnostic { min-height: 150px; }
+.source-span-diagnostic dl { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 8px 14px; margin: 0; }
+.source-span-diagnostic dt { color: var(--muted); }
+.source-span-diagnostic dd { overflow-wrap: anywhere; margin: 0; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+.source-span-diagnostic blockquote { margin: 18px 0 0; padding: 14px 16px; border-left: 3px solid var(--amber); background: #f6f3eb; line-height: 1.75; white-space: pre-wrap; }
 .score-breakdown { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 12px; }
 .score-details { margin-top: 12px; padding-top: 10px; border-top: 1px solid #ebe8df; }
 .score-details summary { cursor: pointer; }

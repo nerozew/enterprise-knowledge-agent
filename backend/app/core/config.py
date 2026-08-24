@@ -74,6 +74,16 @@ class Settings(BaseSettings):
     rag_max_upload_mib: int = Field(default=50, ge=1, le=200)
     rag_evidence_min_score: float = Field(default=0.015, ge=0, le=1)
     rag_evidence_min_lexical_coverage: float = Field(default=0.2, ge=0, le=1)
+    unstructured_pipeline_v2_enabled: bool = False
+    rag_pptx_enabled: bool = True
+    rag_ocr_enabled: bool = True
+    rag_ocr_engine: Literal["RAPIDOCR", "DISABLED"] = "RAPIDOCR"
+    rag_ocr_languages: str = Field(default="ch,en", min_length=2, max_length=80)
+    rag_ocr_mode_default: Literal["AUTO", "FORCE", "OFF"] = "AUTO"
+    rag_ocr_max_pages: int = Field(default=200, ge=1, le=1000)
+    rag_ocr_render_dpi: int = Field(default=300, ge=72, le=600)
+    rag_ocr_page_timeout_seconds: float = Field(default=45, ge=1, le=300)
+    rag_ingestion_lease_seconds: int = Field(default=300, ge=60, le=3600)
 
     @field_validator("database_url")
     @classmethod

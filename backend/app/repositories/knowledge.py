@@ -8,10 +8,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from app.models.knowledge import (
+    ChunkSourceSpan,
     Document,
     DocumentChunk,
     DocumentStatus,
     DocumentVersion,
+    DocumentVersionArtifact,
     DocumentVersionStatus,
     IngestionJob,
 )
@@ -211,6 +213,88 @@ class KnowledgeRepository:
                 DocumentChunk.document_version_id == version_id,
             )
         )
+
+    async def delete_artifacts_for_version(
+        self, workspace_id: UUID, version_id: UUID
+    ) -> list[DocumentVersionArtifact]:
+        artifacts = list(
+            (
+                await self.session.scalars(
+                    select(DocumentVersionArtifact).where(
+                        DocumentVersionArtifact.workspace_id == workspace_id,
+                        DocumentVersionArtifact.document_version_id == version_id,
+                    )
+                )
+            ).all()
+        )
+        await self.session.execute(
+            delete(DocumentVersionArtifact).where(
+                DocumentVersionArtifact.workspace_id == workspace_id,
+                DocumentVersionArtifact.document_version_id == version_id,
+            )
+        )
+        return artifacts
+
+    async def source_spans_by_chunk_ids(
+        self, workspace_id: UUID, chunk_ids: list[UUID]
+    ) -> dict[UUID, list[ChunkSourceSpan]]:
+        if not chunk_ids:
+            return {}
+        rows = list(
+            (
+                await self.session.scalars(
+                    select(ChunkSourceSpan)
+                    .where(
+                        ChunkSourceSpan.workspace_id == workspace_id,
+                        ChunkSourceSpan.chunk_id.in_(chunk_ids),
+                    )
+                    .order_by(ChunkSourceSpan.chunk_id, ChunkSourceSpan.span_ordinal)
+                )
+            ).all()
+        )
+        grouped: dict[UUID, list[ChunkSourceSpan]] = {}
+        for row in rows:
+            grouped.setdefault(row.chunk_id, []).append(row)
+        return grouped
+
+    async def resolve_source_span(
+        self,
+        workspace_id: UUID,
+        document_id: UUID,
+        version_id: UUID,
+        source_span_id: str,
+        *,
+        published_only: bool,
+    ) -> tuple[ChunkSourceSpan, DocumentVersion] | None:
+        query = (
+            select(ChunkSourceSpan, DocumentVersion)
+            .join(
+                DocumentVersion,
+                (DocumentVersion.workspace_id == ChunkSourceSpan.workspace_id)
+                & (DocumentVersion.id == ChunkSourceSpan.document_version_id),
+            )
+            .join(
+                Document,
+                (Document.workspace_id == ChunkSourceSpan.workspace_id)
+                & (Document.id == ChunkSourceSpan.document_id),
+            )
+            .where(
+                ChunkSourceSpan.workspace_id == workspace_id,
+                ChunkSourceSpan.document_id == document_id,
+                ChunkSourceSpan.document_version_id == version_id,
+                ChunkSourceSpan.source_span_id == source_span_id,
+            )
+        )
+        if published_only:
+            query = query.where(
+                Document.status == DocumentStatus.ACTIVE.value,
+                Document.published_version_id == version_id,
+                DocumentVersion.status == DocumentVersionStatus.PUBLISHED.value,
+            )
+        row = (await self.session.execute(query)).first()
+        if row is None:
+            return None
+        return row[0], row[1]
 
     async def published_chunks(
         self,

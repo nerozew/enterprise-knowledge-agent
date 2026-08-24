@@ -3,6 +3,7 @@ import {
   parseDocument,
   parseDocumentPage,
   parseJob,
+  parseSourceSpanLocator,
   parseUploadResult,
   parseVersions,
 } from './ragValidation'
@@ -14,6 +15,7 @@ import type {
   DocumentVersionSummary,
   IngestionJobSummary,
   Page,
+  SourceSpanLocator,
 } from './types'
 
 function uploadForm(input: DocumentUploadInput): FormData {
@@ -21,7 +23,7 @@ function uploadForm(input: DocumentUploadInput): FormData {
   form.append('file', input.file)
   if (input.title?.trim()) form.append('title', input.title.trim())
   form.append('duplicate_policy', input.duplicate_policy)
-  form.append('sync', 'true')
+  form.append('ocr_mode', input.ocr_mode)
   return form
 }
 
@@ -52,6 +54,21 @@ export const documentApi = {
       config,
     )
     return parseVersions(data)
+  },
+
+  async sourceSpan(
+    workspaceId: string,
+    documentId: string,
+    versionId: string,
+    sourceSpanId: string,
+    signal?: AbortSignal,
+  ): Promise<SourceSpanLocator> {
+    const config = signal ? { signal } : {}
+    const { data } = await apiClient.get<unknown>(
+      `/workspaces/${workspaceId}/documents/${documentId}/versions/${versionId}/source-spans/${sourceSpanId}`,
+      config,
+    )
+    return parseSourceSpanLocator(data)
   },
 
   async upload(

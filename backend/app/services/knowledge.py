@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import json
 import time
 from collections.abc import Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import timedelta
 from pathlib import PurePath
 from typing import Any
@@ -30,7 +32,7 @@ from app.knowledge.adapters import (
 from app.knowledge.chunking import ParentChildChunker
 from app.knowledge.errors import KnowledgeError, ProviderUnavailableError
 from app.knowledge.evidence import EvidenceDecision, EvidenceGate, EvidenceGateConfig
-from app.knowledge.parsers import DocumentParser, ParserLimits
+from app.knowledge.parsers import DoclingParserProvider, DocumentParser, ParserLimits
 from app.knowledge.providers import (
     DisabledEmbeddingProvider,
     EvidenceItem,
@@ -56,6 +58,7 @@ from app.knowledge.types import (
     FusionScoring,
     IndexedChunk,
     KnowledgeChunk,
+    OCRMode,
     RetrievalResult,
     RetrievalScoring,
     ScoreAvailability,
@@ -63,15 +66,18 @@ from app.knowledge.types import (
     ScoreDetails,
     ScoredHit,
     ScoreStage,
+    SourceBlock,
 )
 from app.models.base import utc_now
 from app.models.entities import IdempotencyRecord, MemberRole
 from app.models.knowledge import (
+    ChunkSourceSpan,
     CompensationTask,
     Document,
     DocumentChunk,
     DocumentStatus,
     DocumentVersion,
+    DocumentVersionArtifact,
     DocumentVersionStatus,
     IngestionJob,
     IngestionJobAttempt,
@@ -80,7 +86,16 @@ from app.models.knowledge import (
 )
 from app.repositories.knowledge import KnowledgeRepository
 from app.repositories.workspaces import IdempotencyRepository
-from app.schemas.knowledge import SearchHit, SearchRequest, SearchResponse
+from app.schemas.knowledge import (
+    OCRMode as OCRModeValue,
+)
+from app.schemas.knowledge import (
+    SearchHit,
+    SearchRequest,
+    SearchResponse,
+    SourceSpanResolved,
+    SourceSpanSummary,
+)
 from app.services.workspaces import (
     WorkspaceAccessService,
     add_audit,
@@ -93,6 +108,17 @@ _OBJECT_STORES: dict[str, ObjectStore] = {}
 _VECTOR_STORES: dict[str, VectorStore] = {}
 _CACHE_STORES: dict[str, CacheStore] = {}
 _PROVIDERS: dict[str, Any] = {}
+
+
+class _OutboxLeaseLost(RuntimeError):
+    """Raised when another worker has taken ownership of an ingestion event."""
+
+
+@dataclass(frozen=True, slots=True)
+class _OutboxLease:
+    event_id: UUID
+    owner: str
+    attempt: int
 
 
 def _object_store(settings: Settings) -> ObjectStore:
@@ -358,6 +384,13 @@ def version_snapshot(version: DocumentVersion) -> dict[str, Any]:
         "parser_profile": version.parser_profile,
         "chunk_profile": version.chunk_profile,
         "index_profile": version.index_profile,
+        "structure_schema_version": version.structure_schema_version,
+        "layout_profile": version.layout_profile,
+        "ocr_profile": version.ocr_profile,
+        "page_count": version.page_count,
+        "slide_count": version.slide_count,
+        "ocr_page_count": version.ocr_page_count,
+        "parse_warnings": version.parse_warnings_json or [],
         "created_at": version.created_at,
         "published_at": version.published_at,
     }
@@ -371,6 +404,9 @@ def job_snapshot(job: IngestionJob) -> dict[str, Any]:
         "document_version_id": job.document_version_id,
         "status": job.status,
         "stage": job.stage,
+        "stage_detail": job.stage_detail,
+        "pages": job.pages_json or {},
+        "warnings": job.warnings_json or [],
         "progress": job.progress,
         "attempt_count": job.attempt_count,
         "retryable": _job_retryable(job),
@@ -504,6 +540,40 @@ class KnowledgeService:
             )
         )
 
+    async def resolve_source_span(
+        self,
+        document_id: UUID,
+        version_id: UUID,
+        source_span_id: str,
+    ) -> SourceSpanResolved:
+        _, member = await self.access.require(self.workspace_id)
+        resolved = await self.repo.resolve_source_span(
+            self.workspace_id,
+            document_id,
+            version_id,
+            source_span_id,
+            published_only=member.role == MemberRole.VIEWER.value,
+        )
+        if resolved is None:
+            raise AppError("resource_not_found", "来源片段不存在", 404)
+        span, version = resolved
+        return SourceSpanResolved(
+            workspace_id=span.workspace_id,
+            document_id=span.document_id,
+            document_version_id=span.document_version_id,
+            chunk_id=span.chunk_id,
+            source_span_id=span.source_span_id,
+            block_ref=span.block_ref,
+            page_no=span.page_no,
+            slide_no=span.slide_no,
+            bbox=span.bbox_json,
+            block_char_start=span.block_char_start,
+            block_char_end=span.block_char_end,
+            excerpt=span.excerpt_text,
+            excerpt_sha256=span.excerpt_sha256,
+            source_sha256=version.file_sha256,
+        )
+
     async def upload(
         self,
         *,
@@ -513,6 +583,7 @@ class KnowledgeService:
         title: str | None,
         duplicate_policy: str,
         idempotency_key: str | None,
+        ocr_mode: OCRModeValue | None = None,
         document_id: UUID | None = None,
     ) -> tuple[Document, DocumentVersion, IngestionJob, bool]:
         key = validate_idempotency_key(idempotency_key)
@@ -528,12 +599,23 @@ class KnowledgeService:
         if not content or len(content) > max_bytes:
             raise AppError("document_too_large", "文件大小超出限制", 413)
         file_hash = hashlib.sha256(content).hexdigest()
+        effective_ocr_mode = ocr_mode or self.settings.rag_ocr_mode_default
+        source_format = _format_from_name(safe_name)
+        if source_format == "UNSUPPORTED":
+            raise AppError("unsupported_document", "仅支持 PDF、DOCX、PPTX、Markdown 和 TXT", 422)
+        if source_format == "PPTX" and not self.settings.rag_pptx_enabled:
+            raise AppError("unsupported_document", "PPTX 摄取功能未启用", 422)
+        if effective_ocr_mode == "FORCE" and not self.settings.rag_ocr_enabled:
+            raise AppError("ocr_dependency_unavailable", "OCR 功能未启用", 422)
+        if effective_ocr_mode == "AUTO" and not self.settings.rag_ocr_enabled:
+            effective_ocr_mode = "OFF"
         request_hash = canonical_request_hash(
             {
                 "file_sha256": file_hash,
                 "title": title,
                 "duplicate_policy": duplicate_policy,
                 "document_id": document_id,
+                "ocr_mode": effective_ocr_mode,
             }
         )
         scope = f"document.upload:{document_id or 'new'}"
@@ -631,7 +713,7 @@ class KnowledgeService:
             workspace_id=self.workspace_id,
             document_id=document.id,
             created_by_user_id=self.actor_id,
-            format=_format_from_name(safe_name),
+            format=source_format,
             mime_type=(mime_type or "application/octet-stream").split(";", 1)[0],
             file_name=safe_name,
             file_size=len(content),
@@ -639,6 +721,17 @@ class KnowledgeService:
             object_key=object_key,
             status=DocumentVersionStatus.PUBLISHING.value,
             index_profile=_embedding(self.settings).profile,
+            structure_schema_version=(2 if self.settings.unstructured_pipeline_v2_enabled else 1),
+            parser_profile=(
+                "layout-document-v2"
+                if self.settings.unstructured_pipeline_v2_enabled
+                else "structure-v1"
+            ),
+            chunk_profile=(
+                "parent-child-v2"
+                if self.settings.unstructured_pipeline_v2_enabled
+                else "parent-child-v1"
+            ),
         )
         job = IngestionJob(
             workspace_id=self.workspace_id,
@@ -666,6 +759,7 @@ class KnowledgeService:
                 "staging_bucket": self.settings.minio_derived_bucket,
                 "staging_key": staging_key,
                 "target_bucket": self.settings.minio_source_bucket,
+                "ocr_mode": effective_ocr_mode,
             },
         )
         self.repo.add(outbox)
@@ -723,10 +817,17 @@ class KnowledgeService:
         return refreshed_document, refreshed_version, refreshed_job, False
 
     async def _process(
-        self, job: IngestionJob, version: DocumentVersion, content: bytes
+        self,
+        job: IngestionJob,
+        version: DocumentVersion,
+        content: bytes,
+        *,
+        ocr_mode: str = "AUTO",
+        outbox_lease: _OutboxLease | None = None,
     ) -> None:
         job_id = job.id
         version_id = version.id
+        manifest_key: str | None = None
         attempt = IngestionJobAttempt(
             workspace_id=self.workspace_id,
             job_id=job.id,
@@ -736,29 +837,112 @@ class KnowledgeService:
         job.attempt_count += 1
         try:
             job.status = job.stage = IngestionStatus.PARSING.value
+            job.stage_detail = "OCR" if ocr_mode != "OFF" else "NATIVE_TEXT"
             job.progress = 15
             job.version += 1
-            await self.session.flush()
-            parser = DocumentParser(
-                ParserLimits(
-                    max_upload_bytes=self.settings.rag_max_upload_mib * 1024 * 1024
+            job.lease_expires_at = utc_now() + timedelta(
+                seconds=self.settings.rag_ingestion_lease_seconds
+            )
+            await self.session.commit()
+            limits = ParserLimits(
+                max_upload_bytes=self.settings.rag_max_upload_mib * 1024 * 1024,
+                max_pdf_pages=self.settings.rag_ocr_max_pages,
+            )
+            if self.settings.unstructured_pipeline_v2_enabled:
+                parser = DoclingParserProvider(limits=limits)
+                layout = await self._await_with_outbox_lease(
+                    asyncio.to_thread(
+                        parser.parse_layout,
+                        filename=version.file_name,
+                        content=content,
+                        mime_type=version.mime_type,
+                        ocr_mode=OCRMode(ocr_mode),
+                    ),
+                    timeout=max(
+                        30.0,
+                        self.settings.rag_ocr_page_timeout_seconds
+                        * self.settings.rag_ocr_max_pages,
+                    ),
+                    lease=outbox_lease,
                 )
-            )
-            parsed = parser.parse(
-                filename=version.file_name,
-                content=content,
-                mime_type=version.mime_type,
-            )
+                parsed = layout.to_parsed_document()
+            else:
+                parser_v1 = DocumentParser(limits)
+                parsed = await asyncio.to_thread(
+                    parser_v1.parse,
+                    filename=version.file_name,
+                    content=content,
+                    mime_type=version.mime_type,
+                )
             version.mime_type = parsed.mime_type
             version.format = parsed.format.value.upper()
+            version.parser_profile = parsed.parser_profile
+            version.structure_schema_version = 2 if parsed.layout else 1
+            version.layout_profile = parsed.parser_profile if parsed.layout else None
+            version.ocr_profile = parsed.ocr_profile
+            version.page_count = parsed.page_count
+            version.slide_count = parsed.slide_count
+            version.ocr_page_count = parsed.ocr_page_count
+            warnings = [
+                {"code": "parser_warning", "message": warning[:240]}
+                for warning in parsed.warnings
+            ]
+            version.parse_warnings_json = warnings
+            total_pages = parsed.page_count or parsed.slide_count or 0
+            job.pages_json = {
+                "total": total_pages,
+                "ocr_required": parsed.ocr_page_count,
+                "ocr_completed": parsed.ocr_page_count,
+            }
+            job.warnings_json = warnings
+
+            manifest = json.dumps(
+                parsed.to_manifest_dict(),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            manifest_sha = hashlib.sha256(manifest).hexdigest()
+            manifest_key = (
+                f"workspaces/{self.workspace_id}/documents/{version.document_id}/"
+                f"versions/{version.id}/derived/layout-v{version.structure_schema_version}.json"
+            )
+            store = _object_store(self.settings)
+            await self._await_with_outbox_lease(
+                store.put(
+                    self.settings.minio_derived_bucket,
+                    manifest_key,
+                    manifest,
+                    "application/json",
+                ),
+                timeout=self.settings.external_storage_timeout_seconds,
+                lease=outbox_lease,
+            )
+            version.derived_manifest_key = manifest_key
+            version.derived_manifest_sha256 = manifest_sha
 
             job.status = job.stage = IngestionStatus.CHUNKING.value
+            job.stage_detail = "PARENT_CHILD"
             job.progress = 40
             chunks = ParentChildChunker().chunk(
                 parsed,
                 document_id=str(version.document_id),
                 document_version_id=str(version.id),
             )
+            old_artifacts = await self.repo.delete_artifacts_for_version(
+                self.workspace_id, version.id
+            )
+            for artifact in old_artifacts:
+                if artifact.object_key != manifest_key:
+                    self.repo.add(
+                        CompensationTask(
+                            workspace_id=self.workspace_id,
+                            task_type="DELETE_DERIVED_OBJECT",
+                            resource_type="document_version_artifact",
+                            resource_id=version.id,
+                            object_key=artifact.object_key,
+                        )
+                    )
             await self.repo.delete_chunks_for_version(self.workspace_id, version.id)
             mapping: dict[str, UUID] = {}
             for chunk in chunks:
@@ -769,19 +953,51 @@ class KnowledgeService:
                 row = _chunk_row(self.workspace_id, chunk, mapping)
                 self.repo.add(row)
                 chunk_rows.append(row)
+            self.repo.add(
+                DocumentVersionArtifact(
+                    workspace_id=self.workspace_id,
+                    document_version_id=version.id,
+                    artifact_type="LAYOUT_JSON",
+                    locator_key="document",
+                    object_key=manifest_key,
+                    sha256=manifest_sha,
+                    byte_size=len(manifest),
+                    schema_version=version.structure_schema_version,
+                )
+            )
+            for span in _chunk_source_span_rows(
+                self.workspace_id,
+                version,
+                parsed.blocks,
+                chunks,
+            ):
+                self.repo.add(span)
 
             job.status = job.stage = IngestionStatus.STORING.value
+            job.stage_detail = "EMBEDDING"
             job.progress = 60
+            job.lease_expires_at = utc_now() + timedelta(
+                seconds=self.settings.rag_ingestion_lease_seconds
+            )
             await self.session.flush()
             child_chunks = [chunk for chunk in chunks if chunk.kind is ChunkKind.CHILD]
             embedding = _embedding(self.settings)
             if self.settings.rag_provider_mode == "DISABLED":
                 vectors = [[0.0] * 128 for _ in child_chunks]
             else:
-                vectors = await embedding.embed_documents([chunk.text for chunk in child_chunks])
+                vectors = await self._await_with_outbox_lease(
+                    embedding.embed_documents([chunk.text for chunk in child_chunks]),
+                    timeout=max(30.0, self.settings.ai_timeout_seconds),
+                    lease=outbox_lease,
+                )
             vector_store = _vector_store(self.settings)
-            await vector_store.ensure_schema(
-                _profile_hash(version.index_profile), len(vectors[0]) if vectors else 128
+            await self._await_with_outbox_lease(
+                vector_store.ensure_schema(
+                    _profile_hash(version.index_profile),
+                    len(vectors[0]) if vectors else 128,
+                ),
+                timeout=self.settings.external_storage_timeout_seconds,
+                lease=outbox_lease,
             )
             records = [
                 VectorRecord(
@@ -799,17 +1015,32 @@ class KnowledgeService:
                 )
                 for chunk, vector in zip(child_chunks, vectors, strict=True)
             ]
-            await vector_store.upsert(_profile_hash(version.index_profile), records)
-            if not await vector_store.health():
+            await self._await_with_outbox_lease(
+                vector_store.upsert(_profile_hash(version.index_profile), records),
+                timeout=self.settings.external_storage_timeout_seconds,
+                lease=outbox_lease,
+            )
+            healthy = await self._await_with_outbox_lease(
+                vector_store.health(),
+                timeout=self.settings.external_storage_timeout_seconds,
+                lease=outbox_lease,
+            )
+            if not healthy:
                 raise ProviderUnavailableError("vector verification failed")
-            await vector_store.activate_version(
-                _profile_hash(version.index_profile),
-                str(self.workspace_id),
-                str(version.id),
+            await self._await_with_outbox_lease(
+                vector_store.activate_version(
+                    _profile_hash(version.index_profile),
+                    str(self.workspace_id),
+                    str(version.id),
+                ),
+                timeout=self.settings.external_storage_timeout_seconds,
+                lease=outbox_lease,
             )
 
             job.status = job.stage = IngestionStatus.INDEXING.value
+            job.stage_detail = "ACTIVATING_VERSION"
             job.progress = 85
+            await self._assert_outbox_lease(outbox_lease)
             document = await self.repo.get_document(
                 self.workspace_id, version.document_id, for_update=True
             )
@@ -842,7 +1073,10 @@ class KnowledgeService:
             version.status = DocumentVersionStatus.PUBLISHED.value
             version.published_at = now
             job.status = job.stage = IngestionStatus.SUCCEEDED.value
+            job.stage_detail = "COMPLETE"
             job.progress = 100
+            job.lease_owner = None
+            job.lease_expires_at = None
             job.version += 1
             job.updated_at = now
             attempt.outcome = IngestionStatus.SUCCEEDED.value
@@ -857,59 +1091,141 @@ class KnowledgeService:
                 )
                 .values(status="SUCCEEDED")
             )
+            await self._assert_outbox_lease(outbox_lease)
             await self.session.commit()
         except Exception as exc:
             await self.session.rollback()
+            if isinstance(exc, _OutboxLeaseLost):
+                raise
             failed_job = await self.repo.get_job(self.workspace_id, job_id)
             failed_version = await self.repo.get_version(self.workspace_id, version_id)
             if failed_job is not None and failed_version is not None:
                 await self._fail_ingestion(
-                    failed_job, failed_version, exc, failed_version.object_key
+                    failed_job,
+                    failed_version,
+                    exc,
+                    derived_object_key=manifest_key,
                 )
+            raise
+
+    async def _assert_outbox_lease(
+        self, lease: _OutboxLease | None
+    ) -> None:
+        if lease is None:
+            return
+        result = await self.session.execute(
+            update(OutboxEvent)
+            .where(
+                OutboxEvent.id == lease.event_id,
+                OutboxEvent.workspace_id == self.workspace_id,
+                OutboxEvent.status == "PROCESSING",
+                OutboxEvent.lease_owner == lease.owner,
+                OutboxEvent.attempts == lease.attempt,
+            )
+            .values(
+                lease_expires_at=utc_now()
+                + timedelta(seconds=self.settings.rag_ingestion_lease_seconds)
+            )
+        )
+        if getattr(result, "rowcount", 0) != 1:
+            await self.session.rollback()
+            raise _OutboxLeaseLost("outbox ingestion lease was lost")
+        await self.session.commit()
+
+    async def _await_with_outbox_lease(
+        self,
+        awaitable: Any,
+        *,
+        lease: _OutboxLease | None,
+        timeout: float,
+        heartbeat_interval: float | None = None,
+    ) -> Any:
+        """Await an ingestion stage while renewing the claimed Outbox lease.
+
+        The loop owns the heartbeat, so completion, cancellation and exceptions
+        cannot leave a detached renewal task running.
+        """
+
+        task = asyncio.create_task(awaitable)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        interval = heartbeat_interval or max(
+            1.0, min(30.0, self.settings.rag_ingestion_lease_seconds / 3)
+        )
+        try:
+            while True:
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    raise TimeoutError("document parsing exceeded the configured timeout")
+                done, _ = await asyncio.wait({task}, timeout=min(interval, remaining))
+                if task in done:
+                    result = task.result()
+                    await self._assert_outbox_lease(lease)
+                    return result
+                await self._assert_outbox_lease(lease)
+        finally:
+            if not task.done():
+                task.cancel()
 
     async def _fail_ingestion(
         self,
         job: IngestionJob,
         version: DocumentVersion,
         exc: Exception,
-        object_key: str,
+        *,
+        derived_object_key: str | None,
     ) -> None:
+        retryable = isinstance(exc, (ProviderUnavailableError, TimeoutError))
         safe_code = (
-            "unsafe_document"
+            "ingestion_provider_unavailable"
+            if isinstance(exc, ProviderUnavailableError)
+            else "ingestion_timeout"
+            if isinstance(exc, TimeoutError)
+            else "unsafe_document"
             if isinstance(exc, KnowledgeError)
             else "ingestion_dependency_failed"
         )
         safe_message = str(exc)[:255] if isinstance(exc, KnowledgeError) else "摄取依赖失败"
-        job.status = job.stage = IngestionStatus.FAILED.value
+        job.status = job.stage = (
+            IngestionStatus.RETRY_WAIT.value if retryable else IngestionStatus.FAILED.value
+        )
         job.error_code = safe_code
         job.error_message = safe_message
+        job.stage_detail = "FAILED"
+        job.lease_owner = None
+        job.lease_expires_at = None
         job.version += 1
         job.updated_at = utc_now()
-        version.status = DocumentVersionStatus.FAILED.value
-        self.repo.add(
-            CompensationTask(
-                workspace_id=self.workspace_id,
-                task_type="DELETE_OBJECT",
-                resource_type="document_version",
-                resource_id=version.id,
-                object_key=object_key,
+        if not retryable:
+            version.status = DocumentVersionStatus.FAILED.value
+        # The immutable canonical source remains available for an explicit retry.
+        # Only rebuildable derived artifacts and inactive vectors are compensated.
+        if not retryable and derived_object_key:
+            self.repo.add(
+                CompensationTask(
+                    workspace_id=self.workspace_id,
+                    task_type="DELETE_DERIVED_OBJECT",
+                    resource_type="document_version_artifact",
+                    resource_id=version.id,
+                    object_key=derived_object_key,
+                )
             )
-        )
-        self.repo.add(
-            CompensationTask(
-                workspace_id=self.workspace_id,
-                task_type="DEACTIVATE_VECTORS",
-                resource_type="document_version",
-                resource_id=version.id,
+        if not retryable:
+            self.repo.add(
+                CompensationTask(
+                    workspace_id=self.workspace_id,
+                    task_type="DEACTIVATE_VECTORS",
+                    resource_type="document_version",
+                    resource_id=version.id,
+                )
             )
-        )
         await self.session.execute(
             update(IdempotencyRecord)
             .where(
                 IdempotencyRecord.workspace_id == self.workspace_id,
                 IdempotencyRecord.operation_id == job.id,
             )
-            .values(status="FAILED")
+            .values(status="IN_PROGRESS" if retryable else "FAILED")
         )
         await self.session.commit()
 
@@ -937,8 +1253,11 @@ class KnowledgeService:
         event.status = "PROCESSING"
         event.attempts += 1
         event.lease_owner = worker_id
-        event.lease_expires_at = now + timedelta(seconds=60)
+        event.lease_expires_at = now + timedelta(
+            seconds=self.settings.rag_ingestion_lease_seconds
+        )
         await self.session.commit()
+        lease = _OutboxLease(event.id, worker_id, event.attempts)
         try:
             if event.event_type == "knowledge.source.promote":
                 payload = event.payload_json
@@ -953,29 +1272,52 @@ class KnowledgeService:
                 expected_hash = str(payload["file_sha256"])
                 content: bytes | None = None
                 try:
-                    promoted = await store.get(target_bucket, target_key)
+                    promoted = await self._await_with_outbox_lease(
+                        store.get(target_bucket, target_key),
+                        timeout=self.settings.external_storage_timeout_seconds,
+                        lease=lease,
+                    )
                     if hashlib.sha256(promoted).hexdigest() == expected_hash:
                         content = promoted
+                except _OutboxLeaseLost:
+                    raise
                 except Exception:
                     # A missing target is expected before the first promotion.
                     pass
                 if content is None:
-                    content = await store.get(
-                        str(payload["staging_bucket"]), str(payload["staging_key"])
+                    content = await self._await_with_outbox_lease(
+                        store.get(
+                            str(payload["staging_bucket"]),
+                            str(payload["staging_key"]),
+                        ),
+                        timeout=self.settings.external_storage_timeout_seconds,
+                        lease=lease,
                     )
                     if hashlib.sha256(content).hexdigest() != expected_hash:
                         raise KnowledgeError("staging object hash mismatch")
-                    await store.put(
-                        target_bucket,
-                        target_key,
-                        content,
-                        version.mime_type,
+                    await self._await_with_outbox_lease(
+                        store.put(
+                            target_bucket,
+                            target_key,
+                            content,
+                            version.mime_type,
+                        ),
+                        timeout=self.settings.external_storage_timeout_seconds,
+                        lease=lease,
                     )
-                    promoted = await store.get(target_bucket, target_key)
+                    promoted = await self._await_with_outbox_lease(
+                        store.get(target_bucket, target_key),
+                        timeout=self.settings.external_storage_timeout_seconds,
+                        lease=lease,
+                    )
                     if hashlib.sha256(promoted).hexdigest() != expected_hash:
                         raise KnowledgeError("promoted object hash mismatch")
-                await store.delete(
-                    str(payload["staging_bucket"]), str(payload["staging_key"])
+                await self._await_with_outbox_lease(
+                    store.delete(
+                        str(payload["staging_bucket"]), str(payload["staging_key"])
+                    ),
+                    timeout=self.settings.external_storage_timeout_seconds,
+                    lease=lease,
                 )
                 job = await self.repo.latest_job_for_version(
                     self.workspace_id, version.id
@@ -986,15 +1328,25 @@ class KnowledgeService:
                     job.status == IngestionStatus.SUCCEEDED.value
                     and version.status == DocumentVersionStatus.PUBLISHED.value
                 ):
-                    await self._process(job, version, content)
+                    await self._process(
+                        job,
+                        version,
+                        content,
+                        ocr_mode=str(payload.get("ocr_mode", "AUTO")),
+                        outbox_lease=lease,
+                    )
             elif event.event_type == "knowledge.ingestion.process":
                 version = await self.repo.get_version(
                     self.workspace_id, event.aggregate_id
                 )
                 if version is None:
                     raise KnowledgeError("document version disappeared")
-                content = await _object_store(self.settings).get(
-                    self.settings.minio_source_bucket, version.object_key
+                content = await self._await_with_outbox_lease(
+                    _object_store(self.settings).get(
+                        self.settings.minio_source_bucket, version.object_key
+                    ),
+                    timeout=self.settings.external_storage_timeout_seconds,
+                    lease=lease,
                 )
                 job = await self.repo.latest_job_for_version(
                     self.workspace_id, version.id
@@ -1005,48 +1357,86 @@ class KnowledgeService:
                     job.status == IngestionStatus.SUCCEEDED.value
                     and version.status == DocumentVersionStatus.PUBLISHED.value
                 ):
-                    await self._process(job, version, content)
+                    await self._process(
+                        job,
+                        version,
+                        content,
+                        ocr_mode=str(event.payload_json.get("ocr_mode", "AUTO")),
+                        outbox_lease=lease,
+                    )
             elif event.event_type == "knowledge.vector.deactivate":
                 version = await self.repo.get_version(
                     self.workspace_id, event.aggregate_id
                 )
                 if version is not None:
-                    await _vector_store(self.settings).deactivate_version(
-                        _profile_hash(version.index_profile),
-                        str(self.workspace_id),
-                        str(version.id),
+                    await self._await_with_outbox_lease(
+                        _vector_store(self.settings).deactivate_version(
+                            _profile_hash(version.index_profile),
+                            str(self.workspace_id),
+                            str(version.id),
+                        ),
+                        timeout=self.settings.external_storage_timeout_seconds,
+                        lease=lease,
                     )
             else:
                 raise KnowledgeError(f"unsupported outbox event: {event.event_type}")
-            event = await self.session.scalar(
-                select(OutboxEvent).where(OutboxEvent.id == event_id)
+            completed = await self.session.execute(
+                update(OutboxEvent)
+                .where(
+                    OutboxEvent.id == event_id,
+                    OutboxEvent.workspace_id == self.workspace_id,
+                    OutboxEvent.status == "PROCESSING",
+                    OutboxEvent.lease_owner == lease.owner,
+                    OutboxEvent.attempts == lease.attempt,
+                )
+                .values(
+                    status="SUCCEEDED",
+                    processed_at=utc_now(),
+                    lease_owner=None,
+                    lease_expires_at=None,
+                    last_error_code=None,
+                )
             )
-            assert event is not None
-            event.status = "SUCCEEDED"
-            event.processed_at = utc_now()
-            event.lease_owner = None
-            event.lease_expires_at = None
-            event.last_error_code = None
+            if getattr(completed, "rowcount", 0) != 1:
+                await self.session.rollback()
+                return False
             await self.session.commit()
             return True
         except Exception as exc:
             await self.session.rollback()
-            event = await self.session.scalar(
-                select(OutboxEvent).where(OutboxEvent.id == event_id)
+            if isinstance(exc, _OutboxLeaseLost):
+                return False
+            failed = await self.session.execute(
+                update(OutboxEvent)
+                .where(
+                    OutboxEvent.id == event_id,
+                    OutboxEvent.workspace_id == self.workspace_id,
+                    OutboxEvent.status == "PROCESSING",
+                    OutboxEvent.lease_owner == lease.owner,
+                    OutboxEvent.attempts == lease.attempt,
+                )
+                .values(
+                    status=(
+                        "RETRY_WAIT"
+                        if isinstance(exc, (ProviderUnavailableError, TimeoutError))
+                        and lease.attempt < 5
+                        else "DEAD"
+                    ),
+                    available_at=utc_now()
+                    + timedelta(seconds=min(300, 2**lease.attempt)),
+                    lease_owner=None,
+                    lease_expires_at=None,
+                    last_error_code=(
+                        "knowledge_error"
+                        if isinstance(exc, KnowledgeError)
+                        else "dependency_error"
+                    ),
+                )
             )
-            if event is not None:
-                event.status = "DEAD" if event.attempts >= 5 else "RETRY_WAIT"
-                event.available_at = utc_now() + timedelta(
-                    seconds=min(300, 2**event.attempts)
-                )
-                event.lease_owner = None
-                event.lease_expires_at = None
-                event.last_error_code = (
-                    "knowledge_error"
-                    if isinstance(exc, KnowledgeError)
-                    else "dependency_error"
-                )
+            if getattr(failed, "rowcount", 0) == 1:
                 await self.session.commit()
+            else:
+                await self.session.rollback()
             return False
 
     async def process_compensation_task(self, task_id: UUID) -> bool:
@@ -1075,9 +1465,31 @@ class KnowledgeService:
         task.lease_expires_at = now + timedelta(seconds=60)
         await self.session.commit()
         try:
+            if task.resource_type in {
+                "document_version",
+                "document_version_artifact",
+            }:
+                current_version = await self.repo.get_version(
+                    self.workspace_id, task.resource_id
+                )
+                if (
+                    current_version is not None
+                    and current_version.status == DocumentVersionStatus.PUBLISHED.value
+                ):
+                    task.status = "SUCCEEDED"
+                    task.completed_at = utc_now()
+                    task.error_message = None
+                    task.lease_owner = None
+                    task.lease_expires_at = None
+                    await self.session.commit()
+                    return True
             if task.task_type == "DELETE_OBJECT" and task.object_key:
                 await _object_store(self.settings).delete(
                     self.settings.minio_source_bucket, task.object_key
+                )
+            elif task.task_type == "DELETE_DERIVED_OBJECT" and task.object_key:
+                await _object_store(self.settings).delete(
+                    self.settings.minio_derived_bucket, task.object_key
                 )
             elif task.task_type == "DEACTIVATE_VECTORS":
                 version = await self.repo.get_version(
@@ -1174,6 +1586,7 @@ class KnowledgeService:
             payload_json={
                 "document_version_id": str(version.id),
                 "job_id": str(new_job.id),
+                "ocr_mode": self.settings.rag_ocr_mode_default,
             },
         )
         new_job_id = new_job.id
@@ -1743,6 +2156,15 @@ class KnowledgeService:
                 enforce_lexical_coverage=payload.response_mode == "HITS",
             )
             row_by_chunk = {str(row[0].id): row for row in rows}
+            span_loader = getattr(self.repo, "source_spans_by_chunk_ids", None)
+            span_map = (
+                await span_loader(
+                    self.workspace_id,
+                    [row[0].id for row in rows],
+                )
+                if span_loader is not None
+                else {}
+            )
             milvus_hits = [
                 SearchHit(
                     chunk_id=row_by_chunk[hit.chunk.chunk_id][0].id,
@@ -1756,9 +2178,13 @@ class KnowledgeService:
                         row_by_chunk[hit.chunk.chunk_id][0].heading_path
                     ),
                     quote=row_by_chunk[hit.chunk.chunk_id][0].content[:360],
-                    source_span_id=row_by_chunk[hit.chunk.chunk_id][
-                        0
-                    ].source_span_id,
+                    source_span_id=_primary_source_span_id(
+                        span_map.get(row_by_chunk[hit.chunk.chunk_id][0].id, []),
+                        row_by_chunk[hit.chunk.chunk_id][0].source_span_id,
+                    ),
+                    source_spans=_source_span_summaries(
+                        span_map.get(row_by_chunk[hit.chunk.chunk_id][0].id, [])
+                    ),
                     score=hit.score,
                     scores={
                         "dense": hit.scores.get("dense"),
@@ -2004,6 +2430,15 @@ class KnowledgeService:
             enforce_lexical_coverage=payload.response_mode == "HITS",
         )
         row_by_chunk = {str(row[0].id): row for row in rows}
+        span_loader = getattr(self.repo, "source_spans_by_chunk_ids", None)
+        span_map = (
+            await span_loader(
+                self.workspace_id,
+                [row[0].id for row in rows],
+            )
+            if span_loader is not None
+            else {}
+        )
         hits: list[SearchHit] = []
         for hit in result.hits:
             row = row_by_chunk.get(hit.chunk.chunk_id)
@@ -2024,7 +2459,10 @@ class KnowledgeService:
                     page=chunk.page,
                     heading_path=list(chunk.heading_path),
                     quote=chunk.content[:360],
-                    source_span_id=chunk.source_span_id,
+                    source_span_id=_primary_source_span_id(
+                        span_map.get(chunk.id, []), chunk.source_span_id
+                    ),
+                    source_spans=_source_span_summaries(span_map.get(chunk.id, [])),
                     score=hit.score,
                     scores={
                         "dense": hit.scores.get("dense"),
@@ -2235,6 +2673,7 @@ def _format_from_name(filename: str) -> str:
     return {
         ".pdf": "PDF",
         ".docx": "DOCX",
+        ".pptx": "PPTX",
         ".md": "MARKDOWN",
         ".markdown": "MARKDOWN",
         ".txt": "TXT",
@@ -2389,6 +2828,98 @@ def _chunk_row(
         content=chunk.text,
         indexed=False,
     )
+
+
+def _chunk_source_span_rows(
+    workspace_id: UUID,
+    version: DocumentVersion,
+    blocks: Sequence[SourceBlock],
+    chunks: Sequence[KnowledgeChunk],
+) -> list[ChunkSourceSpan]:
+    """Resolve child chunks back to immutable layout blocks.
+
+    A chunk may cross pages or slides, so each overlapping block is persisted as
+    an independent span. Parent chunks are context containers and are not indexed.
+    """
+
+    rows: list[ChunkSourceSpan] = []
+    for chunk in chunks:
+        if chunk.kind is not ChunkKind.CHILD:
+            continue
+        ordinal = 0
+        for block_index, block in enumerate(blocks):
+            overlap_start = max(chunk.char_start, block.char_start)
+            overlap_end = min(chunk.char_end, block.char_end)
+            if overlap_end <= overlap_start:
+                continue
+            local_start = overlap_start - block.char_start
+            local_end = overlap_end - block.char_start
+            raw_excerpt = block.text[local_start:local_end]
+            leading = len(raw_excerpt) - len(raw_excerpt.lstrip())
+            trailing = len(raw_excerpt) - len(raw_excerpt.rstrip())
+            local_start += leading
+            local_end -= trailing
+            excerpt = block.text[local_start:local_end]
+            if not excerpt:
+                continue
+            excerpt_sha = hashlib.sha256(excerpt.encode("utf-8")).hexdigest()
+            block_ref = block.block_key or hashlib.sha256(
+                (
+                    f"{version.id}:{block_index}:{block.page or 0}:"
+                    f"{block.slide or 0}:{block.char_start}:{block.char_end}"
+                ).encode()
+            ).hexdigest()
+            source_span_id = hashlib.sha256(
+                (
+                    f"{version.id}:{block_ref}:{local_start}:{local_end}:"
+                    f"{excerpt_sha}"
+                ).encode()
+            ).hexdigest()
+            rows.append(
+                ChunkSourceSpan(
+                    workspace_id=workspace_id,
+                    document_id=version.document_id,
+                    document_version_id=version.id,
+                    chunk_id=UUID(chunk.chunk_id),
+                    primary_source_span_id=chunk.source_span_id,
+                    source_span_id=source_span_id,
+                    span_ordinal=ordinal,
+                    block_ref=block_ref,
+                    page_no=block.page,
+                    slide_no=block.slide,
+                    bbox_json=block.bbox.to_dict() if block.bbox else None,
+                    block_char_start=local_start,
+                    block_char_end=local_end,
+                    excerpt_text=excerpt,
+                    excerpt_sha256=excerpt_sha,
+                )
+            )
+            ordinal += 1
+    return rows
+
+
+def _source_span_summaries(
+    spans: Sequence[ChunkSourceSpan],
+) -> list[SourceSpanSummary]:
+    return [
+        SourceSpanSummary(
+            source_span_id=span.source_span_id,
+            page_no=span.page_no,
+            slide_no=span.slide_no,
+            bbox=span.bbox_json,
+            excerpt=span.excerpt_text,
+            excerpt_sha256=span.excerpt_sha256,
+        )
+        for span in spans
+    ]
+
+
+def _primary_source_span_id(
+    spans: Sequence[ChunkSourceSpan], fallback: str
+) -> str:
+    """Use the first resolvable V2 span while retaining V1 compatibility."""
+
+    return spans[0].source_span_id if spans else fallback
 
 
 def _knowledge_chunk(chunk: DocumentChunk) -> KnowledgeChunk:

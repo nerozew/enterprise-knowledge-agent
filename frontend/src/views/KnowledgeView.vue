@@ -142,7 +142,7 @@ async function cancel(job: IngestionJobSummary) {
       <form class="document-filters" @submit.prevent="applyFilters">
         <el-input v-model="q" clearable placeholder="搜索文档标题" aria-label="搜索文档标题" />
         <el-select v-model="sourceFormat" clearable placeholder="全部格式" aria-label="按格式筛选">
-          <el-option v-for="format in ['PDF', 'DOCX', 'MARKDOWN', 'TXT']" :key="format" :label="format" :value="format" />
+          <el-option v-for="format in ['PDF', 'DOCX', 'PPTX', 'MARKDOWN', 'TXT']" :key="format" :label="format" :value="format" />
         </el-select>
         <el-select
           v-if="!readonly"

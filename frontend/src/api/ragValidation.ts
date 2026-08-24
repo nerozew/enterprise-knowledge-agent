@@ -6,8 +6,10 @@ import type {
   DocumentUploadResult,
   DocumentVersionStatus,
   DocumentVersionSummary,
+  DiagnosticWarning,
   IngestionJobStatus,
   IngestionJobSummary,
+  IngestionPageProgress,
   AnswerabilityMethod,
   AnswerabilityStatus,
   KnowledgeAnswerability,
@@ -17,6 +19,7 @@ import type {
   KnowledgeScoreDetails,
   KnowledgeSearchScoring,
   KnowledgeSearchResult,
+  KnowledgeSourceSpan,
   Page,
   RetrievalMode,
   ScoreAvailability,
@@ -24,6 +27,8 @@ import type {
   ScoreStage,
   SearchProviderSummary,
   SearchResponseMode,
+  SourceBoundingBox,
+  SourceSpanLocator,
 } from './types'
 
 type JsonObject = Record<string, unknown>
@@ -87,8 +92,29 @@ function strings(value: unknown, field: string): string[] {
   return value.map((entry, index) => string(entry, `${field}.${index}`))
 }
 
+function optionalInteger(value: unknown, field: string, minimum: number): number | undefined {
+  if (value === undefined || value === null) return undefined
+  return integer(value, field, minimum)
+}
+
+function optionalWarnings(value: unknown, field: string): DiagnosticWarning[] | undefined {
+  if (value === undefined || value === null) return undefined
+  if (!Array.isArray(value)) invalid(field)
+  return value.map((entry, index) => ({ ...object(entry, `${field}.${index}`) }))
+}
+
+function boundingBox(value: unknown, field: string): SourceBoundingBox | null {
+  if (value === null || value === undefined) return null
+  const box = object(value, field)
+  const parsed: SourceBoundingBox = {}
+  Object.entries(box).forEach(([key, coordinate]) => {
+    parsed[key] = number(coordinate, `${field}.${key}`)
+  })
+  return parsed
+}
+
 const documentStatuses = ['ACTIVE', 'DELETED'] as const satisfies readonly DocumentStatus[]
-const documentFormats = ['PDF', 'DOCX', 'MARKDOWN', 'TXT'] as const satisfies readonly DocumentFormat[]
+const documentFormats = ['PDF', 'DOCX', 'PPTX', 'MARKDOWN', 'TXT'] as const satisfies readonly DocumentFormat[]
 const versionStatuses = ['PUBLISHING', 'PUBLISHED', 'SUPERSEDED', 'FAILED'] as const satisfies readonly DocumentVersionStatus[]
 const jobStatuses = [
   'QUEUED',
@@ -138,6 +164,18 @@ export function parseDocument(value: unknown): DocumentSummary {
 
 export function parseDocumentVersion(value: unknown): DocumentVersionSummary {
   const item = object(value, 'version')
+  const structureSchemaVersion = optionalInteger(
+    item.structure_schema_version,
+    'version.structure_schema_version',
+    1,
+  )
+  const pageCount = optionalInteger(item.page_count, 'version.page_count', 0)
+  const slideCount = optionalInteger(item.slide_count, 'version.slide_count', 0)
+  const ocrPageCount = optionalInteger(item.ocr_page_count, 'version.ocr_page_count', 0)
+  const parseWarnings = optionalWarnings(
+    item.parse_warnings ?? item.parse_warnings_json,
+    'version.parse_warnings',
+  )
   return {
     id: string(item.id, 'version.id'),
     document_id: string(item.document_id, 'version.document_id'),
@@ -150,6 +188,19 @@ export function parseDocumentVersion(value: unknown): DocumentVersionSummary {
     parser_profile: string(item.parser_profile, 'version.parser_profile'),
     chunk_profile: string(item.chunk_profile, 'version.chunk_profile'),
     index_profile: string(item.index_profile, 'version.index_profile'),
+    ...(structureSchemaVersion === undefined
+      ? {}
+      : { structure_schema_version: structureSchemaVersion }),
+    ...(item.layout_profile === undefined
+      ? {}
+      : { layout_profile: nullableString(item.layout_profile, 'version.layout_profile') }),
+    ...(item.ocr_profile === undefined
+      ? {}
+      : { ocr_profile: nullableString(item.ocr_profile, 'version.ocr_profile') }),
+    ...(pageCount === undefined ? {} : { page_count: pageCount }),
+    ...(slideCount === undefined ? {} : { slide_count: slideCount }),
+    ...(ocrPageCount === undefined ? {} : { ocr_page_count: ocrPageCount }),
+    ...(parseWarnings === undefined ? {} : { parse_warnings: parseWarnings }),
     created_at: string(item.created_at, 'version.created_at'),
     published_at: nullableString(item.published_at, 'version.published_at'),
   }
@@ -159,6 +210,13 @@ export function parseJob(value: unknown): IngestionJobSummary {
   const item = object(value, 'job')
   const errorCode = nullableString(item.error_code, 'job.error_code')
   const errorMessage = nullableString(item.error_message, 'job.error_message')
+  const stageDetail = item.stage_detail === undefined
+    ? undefined
+    : nullableString(item.stage_detail, 'job.stage_detail')
+  const pages = item.pages === undefined || item.pages === null
+    ? undefined
+    : parsePageProgress(item.pages)
+  const warnings = optionalWarnings(item.warnings, 'job.warnings')
   return {
     id: string(item.id, 'job.id'),
     workspace_id: string(item.workspace_id, 'job.workspace_id'),
@@ -166,7 +224,10 @@ export function parseJob(value: unknown): IngestionJobSummary {
     document_version_id: string(item.document_version_id, 'job.document_version_id'),
     status: enumeration(item.status, jobStatuses, 'job.status'),
     stage: string(item.stage, 'job.stage'),
+    ...(stageDetail === undefined ? {} : { stage_detail: stageDetail }),
     progress: number(item.progress, 'job.progress'),
+    ...(pages === undefined ? {} : { pages }),
+    ...(warnings === undefined ? {} : { warnings }),
     attempt_count: number(item.attempt_count, 'job.attempt_count'),
     retryable: boolean(item.retryable, 'job.retryable'),
     ...(errorCode === null ? {} : { error_code: errorCode }),
@@ -175,6 +236,19 @@ export function parseJob(value: unknown): IngestionJobSummary {
     created_at: string(item.created_at, 'job.created_at'),
     updated_at: string(item.updated_at, 'job.updated_at'),
   }
+}
+
+function parsePageProgress(value: unknown): IngestionPageProgress {
+  const pages = object(value, 'job.pages')
+  const parsed = {
+    total: integer(pages.total, 'job.pages.total', 0),
+    ocr_required: integer(pages.ocr_required, 'job.pages.ocr_required', 0),
+    ocr_completed: integer(pages.ocr_completed, 'job.pages.ocr_completed', 0),
+  }
+  if (parsed.ocr_required > parsed.total || parsed.ocr_completed > parsed.ocr_required) {
+    invalid('job.pages')
+  }
+  return parsed
 }
 
 export function parseDocumentPage(value: unknown): Page<DocumentSummary> {
@@ -288,6 +362,9 @@ function parseHit(value: unknown): KnowledgeHit {
     heading_path: strings(hit.heading_path, 'search.hit.heading_path'),
     quote: string(hit.quote, 'search.hit.quote'),
     source_span_id: string(hit.source_span_id, 'search.hit.source_span_id'),
+    ...(hit.source_spans === undefined
+      ? {}
+      : { source_spans: parseSourceSpans(hit.source_spans, 'search.hit.source_spans') }),
     score: number(hit.score, 'search.hit.score'),
     scores: {
       ...(dense === null ? {} : { dense }),
@@ -299,6 +376,65 @@ function parseHit(value: unknown): KnowledgeHit {
       ? {}
       : { score_details: parseScoreDetails(hit.score_details) }),
     context: string(hit.context, 'search.hit.context'),
+  }
+}
+
+function parseSourceSpan(value: unknown, field: string): KnowledgeSourceSpan {
+  const span = object(value, field)
+  const pageNo = nullableNumber(span.page_no, `${field}.page_no`)
+  const slideNo = nullableNumber(span.slide_no, `${field}.slide_no`)
+  if (pageNo !== null && (!Number.isInteger(pageNo) || pageNo < 1)) invalid(`${field}.page_no`)
+  if (slideNo !== null && (!Number.isInteger(slideNo) || slideNo < 1)) invalid(`${field}.slide_no`)
+  return {
+    source_span_id: nonEmptyString(span.source_span_id, `${field}.source_span_id`),
+    page_no: pageNo,
+    slide_no: slideNo,
+    bbox: boundingBox(span.bbox, `${field}.bbox`),
+    excerpt: string(span.excerpt, `${field}.excerpt`),
+    ...(span.excerpt_sha256 === undefined
+      ? {}
+      : { excerpt_sha256: nonEmptyString(span.excerpt_sha256, `${field}.excerpt_sha256`) }),
+  }
+}
+
+function parseSourceSpans(value: unknown, field: string): KnowledgeSourceSpan[] {
+  if (!Array.isArray(value)) invalid(field)
+  return value.map((entry, index) => parseSourceSpan(entry, `${field}.${index}`))
+}
+
+export function parseSourceSpanLocator(value: unknown): SourceSpanLocator {
+  const item = object(value, 'source_span')
+  const base = parseSourceSpan(item, 'source_span')
+  const spanOrdinal = optionalInteger(item.span_ordinal, 'source_span.span_ordinal', 0)
+  const blockCharStart = item.block_char_start === undefined
+    ? undefined
+    : nullableNumber(item.block_char_start, 'source_span.block_char_start')
+  const blockCharEnd = item.block_char_end === undefined
+    ? undefined
+    : nullableNumber(item.block_char_end, 'source_span.block_char_end')
+  return {
+    ...base,
+    ...(item.workspace_id === undefined
+      ? {}
+      : { workspace_id: string(item.workspace_id, 'source_span.workspace_id') }),
+    document_id: nonEmptyString(item.document_id, 'source_span.document_id'),
+    document_version_id: nonEmptyString(
+      item.document_version_id,
+      'source_span.document_version_id',
+    ),
+    ...(item.chunk_id === undefined
+      ? {}
+      : { chunk_id: nullableString(item.chunk_id, 'source_span.chunk_id') }),
+    ...(spanOrdinal === undefined ? {} : { span_ordinal: spanOrdinal }),
+    ...(item.block_ref === undefined
+      ? {}
+      : { block_ref: nullableString(item.block_ref, 'source_span.block_ref') }),
+    ...(blockCharStart === undefined ? {} : { block_char_start: blockCharStart }),
+    ...(blockCharEnd === undefined ? {} : { block_char_end: blockCharEnd }),
+    excerpt_sha256: nonEmptyString(item.excerpt_sha256, 'source_span.excerpt_sha256'),
+    ...(item.source_sha256 === undefined
+      ? {}
+      : { source_sha256: nonEmptyString(item.source_sha256, 'source_span.source_sha256') }),
   }
 }
 

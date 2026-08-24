@@ -1,0 +1,9 @@
+{
+  "case_id": "macro-docx",
+  "file": "negative-macro.docx",
+  "format": "docx",
+  "ocr_mode": "OFF",
+  "expect": "failure",
+  "sha256": "c15392da9aca138b9d462482c62711f3bc4f749234989bd014fb77503c238fc6",
+  "license": "project-authored-test-fixture"
+}

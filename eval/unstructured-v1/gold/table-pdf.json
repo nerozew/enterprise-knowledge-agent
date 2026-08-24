@@ -1,0 +1,18 @@
+{
+  "case_id": "table-pdf",
+  "file": "table-retention.pdf",
+  "format": "pdf",
+  "ocr_mode": "OFF",
+  "expect": "success",
+  "page_count": 1,
+  "phrases": [
+    "Security audit logs",
+    "365 days"
+  ],
+  "required_block_kinds": [
+    "heading",
+    "table"
+  ],
+  "sha256": "5ed36511c0f463648a0de1019667a3e6b0b9c5f827d5fc34e277595858c7532c",
+  "license": "project-authored-test-fixture"
+}

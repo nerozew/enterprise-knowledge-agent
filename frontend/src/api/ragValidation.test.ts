@@ -1,5 +1,5 @@
 import { ApiError } from './client'
-import { parseSearchResult, parseUploadResult } from './ragValidation'
+import { parseSearchResult, parseSourceSpanLocator, parseUploadResult } from './ragValidation'
 
 describe('RAG wire 数据校验', () => {
   it('校验上传响应并保留发布版本与 Job', () => {
@@ -26,6 +26,13 @@ describe('RAG wire 数据校验', () => {
         parser_profile: 'structure-v1',
         chunk_profile: 'parent-child-v1',
         index_profile: 'hybrid-v1',
+        structure_schema_version: 2,
+        layout_profile: 'docling-layout-v2',
+        ocr_profile: 'rapidocr-ch-en',
+        page_count: 8,
+        slide_count: null,
+        ocr_page_count: 2,
+        parse_warnings: [{ code: 'ocr_used', message: '使用 OCR', page_no: 4 }],
         created_at: '2026-07-26T00:00:00Z',
         published_at: '2026-07-26T00:00:01Z',
       },
@@ -36,7 +43,10 @@ describe('RAG wire 数据校验', () => {
         document_version_id: 'version-1',
         status: 'SUCCEEDED',
         stage: 'INDEXING',
+        stage_detail: 'OCR',
         progress: 100,
+        pages: { total: 8, ocr_required: 2, ocr_completed: 2 },
+        warnings: [{ code: 'low_confidence', message: '低置信度文本已保留' }],
         attempt_count: 1,
         retryable: false,
         version: 2,
@@ -47,7 +57,12 @@ describe('RAG wire 数据校验', () => {
     })
 
     expect(result.version.status).toBe('PUBLISHED')
+    expect(result.version.ocr_page_count).toBe(2)
+    expect(result.version.parse_warnings).toEqual([
+      { code: 'ocr_used', message: '使用 OCR', page_no: 4 },
+    ])
     expect(result.job.progress).toBe(100)
+    expect(result.job.pages?.ocr_completed).toBe(2)
   })
 
   it('拒绝缺少固定 source span 的检索命中', () => {
@@ -135,6 +150,14 @@ describe('RAG wire 数据校验', () => {
         heading_path: ['审批'],
         quote: '超过十万元需审批',
         source_span_id: 'span-1',
+        source_spans: [{
+          source_span_id: 'span-1',
+          page_no: 3,
+          slide_no: null,
+          bbox: { left: 0.1, top: 0.2, right: 0.9, bottom: 0.4 },
+          excerpt: '超过十万元需审批',
+          excerpt_sha256: 'a'.repeat(64),
+        }],
         score: 0.016,
         scores: { dense: 0.033, fusion: 0.016 },
         score_details: {
@@ -209,6 +232,10 @@ describe('RAG wire 数据校验', () => {
       lexical_passed: true,
     })
     expect(result.hits[0]?.score_details?.dense_similarity.availability).toBe('NOT_EXPOSED')
+    expect(result.hits[0]?.source_spans?.[0]).toMatchObject({
+      page_no: 3,
+      bbox: { left: 0.1, top: 0.2, right: 0.9, bottom: 0.4 },
+    })
     expect(result.hits[0]?.score_details?.query_fusion.contributions[0]).toEqual({
       query_index: 0,
       value: 0.016,
@@ -231,6 +258,31 @@ describe('RAG wire 数据校验', () => {
     expect(legacy.scoring).toBeUndefined()
     expect(legacy.query_trace).toBeUndefined()
     expect(legacy.answerability).toBeUndefined()
+  })
+
+  it('解析固定版本 Source Span 定位响应', () => {
+    const locator = parseSourceSpanLocator({
+      workspace_id: 'workspace-1',
+      document_id: 'doc-1',
+      document_version_id: 'version-1',
+      chunk_id: 'chunk-1',
+      source_span_id: 'span-1',
+      span_ordinal: 0,
+      block_ref: 'page-3:block-2',
+      page_no: 3,
+      slide_no: null,
+      bbox: { left: 0.1, top: 0.2, right: 0.9, bottom: 0.4 },
+      block_char_start: 10,
+      block_char_end: 22,
+      excerpt: '超过十万元需审批',
+      excerpt_sha256: 'a'.repeat(64),
+      source_sha256: 'b'.repeat(64),
+    })
+
+    expect(locator.document_version_id).toBe('version-1')
+    expect(locator.page_no).toBe(3)
+    expect(locator.bbox?.left).toBe(0.1)
+    expect(locator.source_sha256).toBe('b'.repeat(64))
   })
 
   it('拒绝未知的分数 availability 状态', () => {

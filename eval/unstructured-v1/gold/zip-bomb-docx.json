@@ -1,0 +1,9 @@
+{
+  "case_id": "zip-bomb-docx",
+  "file": "negative-zip-bomb.docx",
+  "format": "docx",
+  "ocr_mode": "OFF",
+  "expect": "failure",
+  "sha256": "14ba7fd3e4032c4edb60bfc4c93cf5a16a852aabca49f30c1a81e655e515128d",
+  "license": "project-authored-test-fixture"
+}

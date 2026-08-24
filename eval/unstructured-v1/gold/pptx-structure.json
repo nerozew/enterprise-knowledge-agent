@@ -1,0 +1,18 @@
+{
+  "case_id": "pptx-structure",
+  "file": "release-policy.pptx",
+  "format": "pptx",
+  "ocr_mode": "OFF",
+  "expect": "success",
+  "slide_count": 2,
+  "phrases": [
+    "企业发布流程",
+    "停止扩量并回滚"
+  ],
+  "required_block_kinds": [
+    "title",
+    "table"
+  ],
+  "sha256": "9f20b2a3af95ec87c0ad06b8c7bd4f0065375d7860fe3c5b633d089d0313a6de",
+  "license": "project-authored-test-fixture"
+}
